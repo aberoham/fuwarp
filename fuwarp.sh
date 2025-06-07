@@ -310,7 +310,7 @@ add_to_shell_config() {
 
 # Function to download and verify certificate
 download_certificate() {
-    print_info "Checking Cloudflare certificate..."
+    print_info "Retrieving Cloudflare WARP certificate..."
     
     # Check if warp-cli is available
     if ! command_exists warp-cli; then
@@ -318,7 +318,7 @@ download_certificate() {
         return 1
     fi
     
-    # Get current certificate from warp-cli to check if update is needed
+    # Get current certificate from warp-cli
     local warp_cert
     warp_cert=$(warp-cli certs --no-paginate 2>/dev/null)
     
@@ -328,52 +328,53 @@ download_certificate() {
         return 1
     fi
     
-    # Check if certificate already exists and compare
-    local needs_update=false
-    if [ -f "$CERT_PATH" ]; then
-        # Quick check using file size first
-        local existing_size=$(wc -c < "$CERT_PATH" 2>/dev/null || echo "0")
-        local new_size=$(echo -n "$warp_cert" | wc -c)
-        
-        if [ "$existing_size" -eq "$new_size" ]; then
-            # Sizes match, do full comparison
-            local existing_cert
-            existing_cert=$(cat "$CERT_PATH" 2>/dev/null)
-            
-            if [ "$existing_cert" = "$warp_cert" ]; then
-                print_info "Certificate at $CERT_PATH is up to date"
-                return 0
-            else
-                print_info "Certificate at $CERT_PATH needs updating"
-                needs_update=true
-            fi
-        else
-            print_info "Certificate at $CERT_PATH needs updating (size differs)"
-            needs_update=true
-        fi
-    else
-        print_info "Certificate not found at $CERT_PATH"
-        needs_update=true
+    # Create a temp file for the WARP certificate
+    local temp_cert=$(mktemp)
+    echo "$warp_cert" > "$temp_cert"
+    
+    # Verify it's a valid PEM certificate
+    if ! openssl x509 -noout -in "$temp_cert" 2>/dev/null; then
+        print_error "Retrieved file is not a valid PEM certificate"
+        rm -f "$temp_cert"
+        return 1
     fi
     
-    # Only proceed if update is needed
-    if [ "$needs_update" = true ]; then
+    print_info "WARP certificate retrieved successfully"
+    
+    # Check if certificate needs to be saved to CERT_PATH
+    local needs_save=false
+    if [ -f "$CERT_PATH" ]; then
+        # Check if existing cert matches WARP cert
+        local existing_cert
+        existing_cert=$(cat "$CERT_PATH" 2>/dev/null)
+        
+        if [ "$existing_cert" != "$warp_cert" ]; then
+            print_info "Certificate at $CERT_PATH needs updating"
+            needs_save=true
+        else
+            print_info "Certificate at $CERT_PATH is up to date"
+        fi
+    else
+        print_info "Certificate will be saved to $CERT_PATH"
+        needs_save=true
+    fi
+    
+    # Save certificate if needed
+    if [ "$needs_save" = true ]; then
         if ! is_install_mode; then
             print_action "Would save certificate to $CERT_PATH"
         else
             # Save certificate
-            echo "$warp_cert" > "$CERT_PATH"
-            
-            # Verify it's a valid PEM certificate
-            if ! openssl x509 -noout -in "$CERT_PATH" 2>/dev/null; then
-                print_error "Retrieved file is not a valid PEM certificate"
-                rm -f "$CERT_PATH"
-                return 1
-            fi
-            
-            print_info "Certificate saved successfully"
+            cp "$temp_cert" "$CERT_PATH"
+            print_info "Certificate saved to $CERT_PATH"
         fi
     fi
+    
+    # Clean up
+    rm -f "$temp_cert"
+    
+    # Cache the fingerprint for later use
+    get_cert_fingerprint > /dev/null
     
     return 0
 }
@@ -1260,14 +1261,30 @@ except Exception as e:
 # Function to check status of all configurations
 check_all_status() {
     local has_issues=false
+    local temp_warp_cert=""
     
     print_info "Checking Cloudflare WARP Certificate Status"
     print_info "==========================================="
     echo
     
-    # Pre-cache certificate info for faster checks
-    if [ -f "$CERT_PATH" ]; then
-        get_cert_fingerprint > /dev/null
+    # First, get the current WARP certificate to use for all comparisons
+    if command_exists warp-cli; then
+        temp_warp_cert=$(mktemp)
+        local warp_cert_content=$(warp-cli certs --no-paginate 2>/dev/null)
+        if [ -n "$warp_cert_content" ]; then
+            echo "$warp_cert_content" > "$temp_warp_cert"
+            print_debug "Retrieved WARP certificate for comparison"
+            # Pre-cache fingerprint for the WARP cert
+            CERT_FINGERPRINT=$(openssl x509 -in "$temp_warp_cert" -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2)
+            print_debug "WARP certificate fingerprint: $CERT_FINGERPRINT"
+        else
+            print_error "Failed to retrieve WARP certificate"
+            rm -f "$temp_warp_cert"
+            return 1
+        fi
+    else
+        print_error "warp-cli not found - cannot retrieve certificate"
+        return 1
     fi
     
     # Check if WARP is connected
@@ -1288,31 +1305,60 @@ check_all_status() {
     fi
     echo
     
-    # Check certificate
+    # Check certificate status
     print_status "Certificate Status:"
-    if [ -f "$CERT_PATH" ]; then
-        print_info "  ✓ Certificate found at $CERT_PATH"
+    
+    # Check if WARP certificate is valid
+    if openssl x509 -noout -checkend 86400 -in "$temp_warp_cert" 1> /dev/null 2>/dev/null; then
+        print_info "  ✓ WARP certificate is valid"
         
-        # Check certificate validity
-        if openssl x509 -noout -checkend 86400 -in "$CERT_PATH" 1> /dev/null 2>/dev/null; then
-            print_info "  ✓ Certificate is valid"
-            
-            # In status mode, skip the expensive warp-cli comparison
-            if is_install_mode && command_exists warp-cli; then
-                local warp_cert=$(warp-cli certs --no-paginate 2>/dev/null)
-                local existing_cert=$(cat "$CERT_PATH" 2>/dev/null)
-                if [ "$existing_cert" != "$warp_cert" ] && [ -n "$warp_cert" ]; then
-                    print_warn "  ✗ Certificate differs from current WARP certificate"
-                    print_action "  Re-run with --fix to update"
-                    has_issues=true
-                fi
+        # Check where the certificate is currently stored
+        local cert_locations=""
+        local cert_found=false
+        
+        # Check common locations
+        if [ -f "$CERT_PATH" ]; then
+            local existing_cert=$(cat "$CERT_PATH" 2>/dev/null)
+            local warp_cert_content=$(cat "$temp_warp_cert" 2>/dev/null)
+            if [ "$existing_cert" = "$warp_cert_content" ]; then
+                cert_locations="$cert_locations\n    - $CERT_PATH"
+                cert_found=true
             fi
+        fi
+        
+        # Check NODE_EXTRA_CA_CERTS
+        if [ -n "${NODE_EXTRA_CA_CERTS:-}" ] && [ -f "$NODE_EXTRA_CA_CERTS" ]; then
+            if certificate_exists_in_file "$temp_warp_cert" "$NODE_EXTRA_CA_CERTS"; then
+                cert_locations="$cert_locations\n    - $NODE_EXTRA_CA_CERTS (NODE_EXTRA_CA_CERTS)"
+                cert_found=true
+            fi
+        fi
+        
+        # Check REQUESTS_CA_BUNDLE
+        if [ -n "${REQUESTS_CA_BUNDLE:-}" ] && [ -f "$REQUESTS_CA_BUNDLE" ]; then
+            if certificate_exists_in_file "$temp_warp_cert" "$REQUESTS_CA_BUNDLE"; then
+                cert_locations="$cert_locations\n    - $REQUESTS_CA_BUNDLE (REQUESTS_CA_BUNDLE)"
+                cert_found=true
+            fi
+        fi
+        
+        # Check SSL_CERT_FILE
+        if [ -n "${SSL_CERT_FILE:-}" ] && [ -f "$SSL_CERT_FILE" ]; then
+            if certificate_exists_in_file "$temp_warp_cert" "$SSL_CERT_FILE"; then
+                cert_locations="$cert_locations\n    - $SSL_CERT_FILE (SSL_CERT_FILE)"
+                cert_found=true
+            fi
+        fi
+        
+        if [ "$cert_found" = true ]; then
+            print_info "  ✓ WARP certificate found in:$cert_locations"
         else
-            print_warn "  ✗ Certificate is expired or expiring soon"
+            print_warn "  ✗ WARP certificate not found in any configured location"
+            print_action "    Run with --fix to install the certificate"
             has_issues=true
         fi
     else
-        print_warn "  ✗ Certificate not found at $CERT_PATH"
+        print_warn "  ✗ WARP certificate is expired or expiring soon"
         has_issues=true
     fi
     echo
@@ -1323,8 +1369,8 @@ check_all_status() {
         if [ -n "${NODE_EXTRA_CA_CERTS:-}" ]; then
             print_info "  NODE_EXTRA_CA_CERTS is set to: $NODE_EXTRA_CA_CERTS"
             if [ -f "$NODE_EXTRA_CA_CERTS" ]; then
-                if certificate_exists_in_file "$CERT_PATH" "$NODE_EXTRA_CA_CERTS"; then
-                    print_info "  ✓ NODE_EXTRA_CA_CERTS contains Cloudflare certificate"
+                if certificate_exists_in_file "$temp_warp_cert" "$NODE_EXTRA_CA_CERTS"; then
+                    print_info "  ✓ NODE_EXTRA_CA_CERTS contains current WARP certificate"
                     local verify_result=$(verify_connection "node")
                     if [ "$verify_result" = "WORKING" ]; then
                         print_info "  ✓ Node.js can connect through WARP"
@@ -1333,7 +1379,7 @@ check_all_status() {
                         has_issues=true
                     fi
                 else
-                    print_warn "  ✗ NODE_EXTRA_CA_CERTS file exists but doesn't contain Cloudflare certificate"
+                    print_warn "  ✗ NODE_EXTRA_CA_CERTS file exists but doesn't contain current WARP certificate"
                     print_action "    Run with --fix to append the certificate to this file"
                     has_issues=true
                 fi
@@ -1351,10 +1397,10 @@ check_all_status() {
             local npm_cafile=$(npm config get cafile 2>/dev/null || echo "")
             if [ -n "$npm_cafile" ] && [ "$npm_cafile" != "null" ] && [ "$npm_cafile" != "undefined" ]; then
                 if [ -f "$npm_cafile" ]; then
-                    if certificate_exists_in_file "$CERT_PATH" "$npm_cafile"; then
-                        print_info "  ✓ npm cafile configured with Cloudflare certificate"
+                    if certificate_exists_in_file "$temp_warp_cert" "$npm_cafile"; then
+                        print_info "  ✓ npm cafile contains current WARP certificate"
                     else
-                        print_warn "  ✗ npm cafile doesn't contain Cloudflare certificate"
+                        print_warn "  ✗ npm cafile doesn't contain current WARP certificate"
                         has_issues=true
                     fi
                 else
@@ -1374,35 +1420,53 @@ check_all_status() {
     # Check Python configuration
     print_status "Python Configuration:"
     if command_exists python3 || command_exists python; then
+        local python_configured=false
+        
         if [ -n "${REQUESTS_CA_BUNDLE:-}" ]; then
             print_info "  REQUESTS_CA_BUNDLE is set to: $REQUESTS_CA_BUNDLE"
             if [ -f "$REQUESTS_CA_BUNDLE" ]; then
-                if certificate_exists_in_file "$CERT_PATH" "$REQUESTS_CA_BUNDLE"; then
-                    print_info "  ✓ REQUESTS_CA_BUNDLE contains Cloudflare certificate"
-                    local verify_result=$(verify_connection "python")
-                    if [ "$verify_result" = "WORKING" ]; then
-                        print_info "  ✓ Python can connect through WARP"
-                    else
-                        print_warn "  ✗ Python connection test failed"
-                        has_issues=true
-                    fi
+                if certificate_exists_in_file "$temp_warp_cert" "$REQUESTS_CA_BUNDLE"; then
+                    print_info "  ✓ REQUESTS_CA_BUNDLE contains current WARP certificate"
+                    python_configured=true
                 else
-                    print_warn "  ✗ REQUESTS_CA_BUNDLE file exists but doesn't contain Cloudflare certificate"
+                    print_warn "  ✗ REQUESTS_CA_BUNDLE file exists but doesn't contain current WARP certificate"
                     print_action "    Run with --fix to create a new bundle with both certificates"
-                    has_issues=true
                 fi
             else
                 print_warn "  ✗ REQUESTS_CA_BUNDLE points to non-existent file: $REQUESTS_CA_BUNDLE"
-                has_issues=true
             fi
-        else
-            print_warn "  ✗ REQUESTS_CA_BUNDLE not configured"
-            has_issues=true
         fi
         
         # Also check SSL_CERT_FILE if set
         if [ -n "${SSL_CERT_FILE:-}" ]; then
             print_info "  SSL_CERT_FILE is set to: $SSL_CERT_FILE"
+            if [ -f "$SSL_CERT_FILE" ]; then
+                if certificate_exists_in_file "$temp_warp_cert" "$SSL_CERT_FILE"; then
+                    print_info "  ✓ SSL_CERT_FILE contains current WARP certificate"
+                    python_configured=true
+                fi
+            fi
+        fi
+        
+        if [ "$python_configured" = true ]; then
+            local verify_result=$(verify_connection "python")
+            if [ "$verify_result" = "WORKING" ]; then
+                print_info "  ✓ Python can connect through WARP"
+            else
+                print_warn "  ✗ Python connection test failed despite certificate being configured"
+                has_issues=true
+            fi
+        else
+            if [ -z "${REQUESTS_CA_BUNDLE:-}" ] && [ -z "${SSL_CERT_FILE:-}" ]; then
+                print_warn "  ✗ No Python certificate environment variables configured"
+                has_issues=true
+            elif [ -z "${REQUESTS_CA_BUNDLE:-}" ]; then
+                print_warn "  ✗ REQUESTS_CA_BUNDLE not configured"
+                has_issues=true
+            else
+                # REQUESTS_CA_BUNDLE or SSL_CERT_FILE is set but doesn't contain the cert
+                has_issues=true
+            fi
         fi
     else
         print_info "  - Python not installed"
@@ -1485,10 +1549,10 @@ check_all_status() {
     if command_exists gcloud; then
         local gcloud_ca=$(gcloud config get-value core/custom_ca_certs_file 2>/dev/null || echo "")
         if [ -n "$gcloud_ca" ] && [ -f "$gcloud_ca" ]; then
-            if certificate_exists_in_file "$CERT_PATH" "$gcloud_ca"; then
-                print_info "  ✓ gcloud configured with Cloudflare certificate"
+            if certificate_exists_in_file "$temp_warp_cert" "$gcloud_ca"; then
+                print_info "  ✓ gcloud configured with current WARP certificate"
             else
-                print_warn "  ✗ gcloud CA file doesn't contain Cloudflare certificate"
+                print_warn "  ✗ gcloud CA file doesn't contain current WARP certificate"
                 has_issues=true
             fi
         else
@@ -1606,6 +1670,9 @@ check_all_status() {
         print_info "✓ All configured tools are properly set up for Cloudflare WARP"
     fi
     echo
+    
+    # Cleanup
+    rm -f "$temp_warp_cert"
 }
 
 # Function to setup wget certificate
