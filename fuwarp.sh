@@ -1315,9 +1315,10 @@ check_all_status() {
     print_status "Node.js Configuration:"
     if command_exists node; then
         if [ -n "${NODE_EXTRA_CA_CERTS:-}" ]; then
+            print_info "  NODE_EXTRA_CA_CERTS is set to: $NODE_EXTRA_CA_CERTS"
             if [ -f "$NODE_EXTRA_CA_CERTS" ]; then
                 if certificate_exists_in_file "$CERT_PATH" "$NODE_EXTRA_CA_CERTS"; then
-                    print_info "  ✓ NODE_EXTRA_CA_CERTS configured with Cloudflare certificate"
+                    print_info "  ✓ NODE_EXTRA_CA_CERTS contains Cloudflare certificate"
                     local verify_result=$(verify_connection "node")
                     if [ "$verify_result" = "WORKING" ]; then
                         print_info "  ✓ Node.js can connect through WARP"
@@ -1326,11 +1327,12 @@ check_all_status() {
                         has_issues=true
                     fi
                 else
-                    print_warn "  ✗ NODE_EXTRA_CA_CERTS doesn't contain Cloudflare certificate"
+                    print_warn "  ✗ NODE_EXTRA_CA_CERTS file exists but doesn't contain Cloudflare certificate"
+                    print_action "    Run with --fix to append the certificate to this file"
                     has_issues=true
                 fi
             else
-                print_warn "  ✗ NODE_EXTRA_CA_CERTS points to non-existent file"
+                print_warn "  ✗ NODE_EXTRA_CA_CERTS points to non-existent file: $NODE_EXTRA_CA_CERTS"
                 has_issues=true
             fi
         else
@@ -1367,9 +1369,10 @@ check_all_status() {
     print_status "Python Configuration:"
     if command_exists python3 || command_exists python; then
         if [ -n "${REQUESTS_CA_BUNDLE:-}" ]; then
+            print_info "  REQUESTS_CA_BUNDLE is set to: $REQUESTS_CA_BUNDLE"
             if [ -f "$REQUESTS_CA_BUNDLE" ]; then
                 if certificate_exists_in_file "$CERT_PATH" "$REQUESTS_CA_BUNDLE"; then
-                    print_info "  ✓ REQUESTS_CA_BUNDLE configured with Cloudflare certificate"
+                    print_info "  ✓ REQUESTS_CA_BUNDLE contains Cloudflare certificate"
                     local verify_result=$(verify_connection "python")
                     if [ "$verify_result" = "WORKING" ]; then
                         print_info "  ✓ Python can connect through WARP"
@@ -1378,16 +1381,22 @@ check_all_status() {
                         has_issues=true
                     fi
                 else
-                    print_warn "  ✗ REQUESTS_CA_BUNDLE doesn't contain Cloudflare certificate"
+                    print_warn "  ✗ REQUESTS_CA_BUNDLE file exists but doesn't contain Cloudflare certificate"
+                    print_action "    Run with --fix to create a new bundle with both certificates"
                     has_issues=true
                 fi
             else
-                print_warn "  ✗ REQUESTS_CA_BUNDLE points to non-existent file"
+                print_warn "  ✗ REQUESTS_CA_BUNDLE points to non-existent file: $REQUESTS_CA_BUNDLE"
                 has_issues=true
             fi
         else
             print_warn "  ✗ REQUESTS_CA_BUNDLE not configured"
             has_issues=true
+        fi
+        
+        # Also check SSL_CERT_FILE if set
+        if [ -n "${SSL_CERT_FILE:-}" ]; then
+            print_info "  SSL_CERT_FILE is set to: $SSL_CERT_FILE"
         fi
     else
         print_info "  - Python not installed"
