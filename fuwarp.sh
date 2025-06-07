@@ -188,23 +188,29 @@ certificate_likely_exists_in_file() {
         return 1
     fi
     
-    # Extract the actual certificate content (without headers/footers)
-    local cert_content
-    cert_content=$(sed -n '/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/p' "$cert_file" | grep -v -- "-----" | head -5)
+    # Method 1: Try to match by subject CN (most reliable for status check)
+    local cert_cn
+    cert_cn=$(openssl x509 -in "$cert_file" -noout -subject 2>/dev/null | grep -o 'CN=[^,]*' | cut -d= -f2-)
     
-    if [ -z "$cert_content" ]; then
-        return 1
+    if [ -n "$cert_cn" ] && grep -qF "$cert_cn" "$target_file" 2>/dev/null; then
+        print_debug "Certificate likely exists in $target_file (found matching CN: $cert_cn)"
+        return 0
     fi
     
-    # Check if the first few lines of the certificate content exist in the target file
-    # This is much more reliable than checking the subject
-    local line
-    while IFS= read -r line; do
-        if [ -n "$line" ] && grep -qF "$line" "$target_file" 2>/dev/null; then
+    # Method 2: Try to match certificate content
+    local cert_content
+    cert_content=$(sed -n '/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/p' "$cert_file" | grep -v -- "-----" | tr -d '\n' | cut -c1-100)
+    
+    if [ -n "$cert_content" ]; then
+        # Extract content from target file and compare
+        local target_certs
+        target_certs=$(sed -n '/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/p' "$target_file" | grep -v -- "-----" | tr -d '\n')
+        
+        if [[ "$target_certs" == *"$cert_content"* ]]; then
             print_debug "Certificate likely exists in $target_file (found matching content)"
             return 0
         fi
-    done <<< "$cert_content"
+    fi
     
     return 1
 }
