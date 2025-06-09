@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Purpose
 
-fuwarp (Cloudflare WARP Certificate Fixer Upper) is a bash script that automatically fixes TLS certificate trust issues when using Cloudflare WARP with TLS decryption. The script configures various development tools to trust WARP's Gateway CA certificate.
+fuwarp (Cloudflare WARP Certificate Fixer Upper) is a Python script that automatically fixes TLS certificate trust issues when using Cloudflare WARP with TLS decryption. The script configures various development tools to trust WARP's Gateway CA certificate.
 
 ## Key Commands
 
@@ -12,23 +12,26 @@ fuwarp (Cloudflare WARP Certificate Fixer Upper) is a bash script that automatic
 
 ```bash
 # Check current certificate status (no changes made)
-./fuwarp.sh
+./fuwarp.py
 
 # Actually install/update certificates (makes changes)
-./fuwarp.sh --fix
+./fuwarp.py --fix
 
 # Run with detailed debug output for troubleshooting
-./fuwarp.sh --debug
-./fuwarp.sh --debug --fix  # Debug mode with fixes
+./fuwarp.py --debug
+./fuwarp.py --debug --fix  # Debug mode with fixes
 
 # Show help
-./fuwarp.sh --help
+./fuwarp.py --help
+
+# Show version information
+./fuwarp.py --version
 ```
 
 ### Testing
 
 The script doesn't have a formal test suite. Manual testing involves:
-- Running in status mode to verify detection: `./fuwarp.sh`
+- Running in status mode to verify detection: `./fuwarp.py`
 - Running with `--fix` to test installation on different tool configurations
 
 ## Architecture Overview
@@ -58,9 +61,10 @@ The script follows a modular architecture with these key components:
 
 ## Key Implementation Details
 
-- Uses `set -euo pipefail` for strict error handling
+- Uses Python's exception handling for robust error management
 - Preserves existing CA bundles by appending rather than replacing
 - Handles multiple certificate formats and locations across different tools
 - Provides user-friendly colored output with clear status indicators
 - Supports both system-wide and user-specific certificate locations
 - Detects and adapts to user's shell (bash, zsh, fish)
+- Cross-platform Python implementation with proper type handling

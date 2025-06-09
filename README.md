@@ -6,17 +6,17 @@ Script to automatically verify and fix Cloudflare Warp Gateway TLS distrust issu
 
 ```bash
 # Download the script
-curl -LsSf https://raw.githubusercontent.com/aberoham/fuwarp/main/fuwarp.sh -o fuwarp.sh
-chmod +x ./fuwarp.sh
+curl -LsSf https://raw.githubusercontent.com/aberoham/fuwarp/main/fuwarp.py -o fuwarp.py
+chmod +x ./fuwarp.py
 
 # Check status (no changes made)
-./fuwarp.sh
+./fuwarp.py
 
 # Apply fixes
-./fuwarp.sh --fix
+./fuwarp.py --fix
 
 # Run with detailed debug output (useful for troubleshooting)
-./fuwarp.sh --debug
+./fuwarp.py --debug
 ```
 ## FU Warp Rational
 
@@ -40,7 +40,7 @@ The act of toggling Warp off also seriously hints that you have no clue what you
 
 - Cloudflare WARP must be installed and connected
 - `warp-cli` command must be available
-- Bash shell (macOS)
+- Python 3 (macOS)
 
 ## Contribute
 
