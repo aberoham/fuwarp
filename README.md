@@ -57,4 +57,5 @@ Something amiss or not quite right? Please post the full output of a run to an i
 - Podman: installs certificate in Podman VM's trust store.
 - Rancher Desktop: installs certificate in Rancher VM's trust store.
 - Android Emulator: helps install certificate on running Android emulators.
+- Colima: helps install certificate into the Colima VM.
 
