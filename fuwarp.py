@@ -130,7 +130,8 @@ BLUE = '\033[0;34m'
 NC = '\033[0m'  # No Color
 
 # Certificate details
-CERT_PATH = os.path.expanduser("~/.cloudflare-ca.pem")
+UNEXPANDED_CERT_PATH = '~/.cloudflare-ca.pem'
+CERT_PATH = os.path.expanduser(UNEXPANDED_CERT_PATH)
 SHELL_MODIFIED = False
 CERT_FINGERPRINT = ""  # Cache for certificate fingerprint
 
@@ -1273,6 +1274,134 @@ class FuwarpPython:
                 else:
                     self.print_error("Failed to push certificate to emulator")
     
+    def setup_colima_cert(self):
+        """Setup Colima certificate."""
+        if not self.command_exists('colima'):
+            return
+
+        self.print_info("Setting up Colima certificate...")
+
+        # Check if colima is running
+        try:
+            result = subprocess.run(['colima', 'status'], stdout=subprocess.PIPE, text=True, stderr=subprocess.STDOUT)
+            if 'running' not in result.stdout.lower():
+                self.print_warn("Colima is not currently running")
+                self.print_info("Please start colima first with: colima start")
+                return
+        except:
+            return
+
+        # Define the provision commands that will be added
+        provision_commands = [
+            "# Install Cloudflare WARP certificate for Docker",
+            "mkdir -fp /usr/local/share/ca-certificates",
+            f"sudo cp {UNEXPANDED_CERT_PATH} /usr/local/share/ca-certificates/cloudflare-ca.crt",
+            "sudo update-ca-certificates"
+        ]
+
+        # Check if the provision section already has WARP configuration
+        colima_config = os.path.expanduser("~/.colima/default/colima.yaml")
+
+        if not os.path.exists(colima_config):
+            self.print_error(f"Colima config file not found at: {colima_config}")
+            return
+
+        # Read current config to check if WARP cert is already configured
+        try:
+            with open(colima_config, 'r') as f:
+                config_content = f.read()
+
+            # Check if our commands are already in the provision section
+            if 'cloudflare-ca.crt' in config_content and 'update-ca-certificates' in config_content:
+                self.print_info("Colima config already contains Cloudflare certificate setup")
+                return
+        except Exception as e:
+            self.print_error(f"Error reading colima config: {e}")
+            return
+
+        if not self.is_install_mode():
+            self.print_action("Would modify ~/.colima/default/colima.yaml provision section")
+            self.print_action("Would add the following commands to provision:")
+            self.print_action(f"  - mode: user")
+            self.print_action(f"    script: |")
+            for cmd in provision_commands:
+                self.print_action(f"  {cmd}")
+        else:
+            self.print_info("Modifying Colima configuration to include Cloudflare certificate...")
+
+            # Backup the original config
+            backup_path = colima_config + '.bak'
+            try:
+                with open(colima_config, 'r') as f:
+                    original_config = f.read()
+                with open(backup_path, 'w') as f:
+                    f.write(original_config)
+                self.print_info(f"Backed up original config to {backup_path}")
+            except Exception as e:
+                self.print_error(f"Failed to backup config: {e}")
+                return
+
+            # Parse the YAML-like config and add the provision commands
+            lines = original_config.splitlines()
+            new_lines = []
+            in_provision = False
+            provision_indent = "  "
+            added_commands = False
+
+            for line in lines:
+                new_lines.append(line)
+
+                # Look for provision section
+                if line.strip().startswith('provision:'):
+                    new_lines[len(new_lines)-1] = 'provision:'
+                    in_provision = True
+                    continue
+                elif in_provision and line.strip() and not line.startswith(' ') and not line.startswith('\t'):
+                    # We've left the provision section
+                    if not added_commands:
+                        # Add our commands before leaving provision section
+                        new_lines.insert(-1, f"{provision_indent}- mode: user")
+                        new_lines.insert(-1, f"{provision_indent}  script: |")
+                        for cmd in provision_commands:
+                            new_lines.insert(-1, f"{provision_indent}    {cmd}")
+                        new_lines.insert(-1, "")
+                        added_commands = True
+                    in_provision = False
+                elif in_provision and line.strip().startswith('-'):
+                    # This is a provision item, capture the indentation
+                    if not provision_indent:
+                        provision_indent = line[:line.index('-')]
+
+            # If we're still in provision section at end of file, add commands
+            if in_provision and not added_commands:
+                new_lines.insert(-1, f"{provision_indent}- mode: user")
+                new_lines.insert(-1, f"{provision_indent}  script: |")
+                for cmd in provision_commands:
+                    new_lines.insert(-1, f"{provision_indent}    {cmd}")
+                new_lines.insert(-1, "")
+
+            # Write the modified config
+            try:
+                with open(colima_config, 'w') as f:
+                    f.write('\n'.join(new_lines) + '\n')
+                self.print_info("Modified colima.yaml to include certificate installation")
+            except Exception as e:
+                self.print_error(f"Failed to write modified config: {e}")
+                # Restore backup
+                try:
+                    with open(backup_path, 'r') as f:
+                        backup_content = f.read()
+                    with open(colima_config, 'w') as f:
+                        f.write(backup_content)
+                    self.print_info("Restored original config from backup")
+                except:
+                    pass
+                return
+
+            self.print_info("Colima certificate configuration completed")
+            self.print_warn("You'll need to restart colima for changes to take effect:")
+            self.print_info("  colima stop && colima start")
+
     def verify_connection(self, tool_name):
         """Verify if a tool can connect through WARP."""
         test_url = "https://www.cloudflare.com"
@@ -1834,6 +1963,36 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
             self.print_info("  - Rancher Desktop not installed (would configure if present)")
         print()
         
+        # Check Colima configuration
+        self.print_status("Colima Configuration:")
+        if self.command_exists('colima'):
+            try:
+                # Check if Colima is running
+                result = subprocess.run(['colima', 'status'], stdout=subprocess.PIPE, text=True, stderr=subprocess.STDOUT)
+                if 'running' in result.stdout.lower():
+                    # Check if colima.yaml has WARP certificate configuration
+                    colima_config = os.path.expanduser("~/.colima/default/colima.yaml")
+                    if os.path.exists(colima_config):
+                        with open(colima_config, 'r') as f:
+                            config_content = f.read()
+
+                        if 'cloudflare-ca.crt' in config_content and 'update-ca-certificates' in config_content:
+                            self.print_info("  ✓ Colima configuration includes Cloudflare certificate setup")
+                        else:
+                            self.print_warn("  ✗ Colima configuration missing Cloudflare certificate setup")
+                            has_issues = True
+                    else:
+                        self.print_warn("  ✗ Colima config file not found")
+                        has_issues = True
+                else:
+                    self.print_info("  - Colima installed but not running")
+                    self.print_info("    Start with: colima start")
+            except:
+                self.print_info("  - Colima installed but status check failed")
+        else:
+            self.print_info("  - Colima not installed (would configure if present)")
+        print()
+
         # Check Docker configuration
         self.print_status("Docker Configuration:")
         if self.command_exists('docker'):
@@ -1929,6 +2088,7 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
                 self.setup_wget_cert()
                 self.setup_podman_cert()
                 self.setup_rancher_cert()
+                self.setup_colima_cert()
                 self.setup_android_emulator_cert()
                 
                 # Final message
