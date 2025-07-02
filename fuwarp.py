@@ -206,6 +206,13 @@ class FuwarpPython:
                 'setup_func': self.setup_android_emulator_cert,
                 'check_func': self.check_android_status,
                 'description': 'Android SDK emulator'
+            },
+            'colima': {
+                'name': 'Colima',
+                'tags': ['colima', 'docker', 'docker-desktop', 'container', 'vm'],
+                'setup_func': self.setup_colima_cert,
+                'check_func': self.check_colima_status,
+                'description': 'Colima Docker runtime'
             }
         }
         
@@ -1397,6 +1404,65 @@ class FuwarpPython:
                 else:
                     self.print_error("Failed to push certificate to emulator")
     
+    def setup_colima_cert(self):
+        """Setup Colima certificate."""
+        if not self.command_exists('colima'):
+            return
+        
+        self.print_info("Setting up Colima certificate...")
+        
+        # Check if colima machine is running
+        try:
+            result = subprocess.run(['colima', 'status'], capture_output=True, text=True)
+            # Colima outputs status to stderr, not stdout
+            status_output = result.stdout + result.stderr
+            if 'running' not in status_output.lower():
+                self.print_warn("No Colima machine is currently running")
+                self.print_info("Please start a Colima machine first with: colima start")
+                return
+        except:
+            return
+        
+        if not self.is_install_mode():
+            self.print_action("Would copy certificate to Colima VM")
+            self.print_action(f"Would run: colima ssh -- sudo tee /usr/local/share/ca-certificates/cloudflare-warp.crt < {CERT_PATH}")
+            self.print_action("Would run: colima ssh -- sudo update-ca-certificates")
+            self.print_action("Would run: colima ssh -- sudo systemctl restart docker")
+        else:
+            self.print_info("Copying certificate to Colima VM...")
+            
+            # Copy certificate into Colima VM
+            with open(CERT_PATH, 'r') as f:
+                cert_content = f.read()
+            
+            result = subprocess.run(
+                ['colima', 'ssh', '--', 'sudo', 'tee', '/usr/local/share/ca-certificates/cloudflare-warp.crt'],
+                input=cert_content, text=True, capture_output=True
+            )
+            
+            if result.returncode == 0:
+                # Update CA certificates
+                result = subprocess.run(
+                    ['colima', 'ssh', '--', 'sudo', 'update-ca-certificates'],
+                    capture_output=True
+                )
+                if result.returncode == 0:
+                    self.print_info("Certificate installed. Restarting Docker daemon...")
+                    # Restart Docker daemon to pick up new certificates
+                    result = subprocess.run(
+                        ['colima', 'ssh', '--', 'sudo', 'systemctl', 'restart', 'docker'],
+                        capture_output=True
+                    )
+                    if result.returncode == 0:
+                        self.print_info("Colima certificate installed successfully and Docker daemon restarted")
+                    else:
+                        self.print_warn("Certificate installed but failed to restart Docker daemon")
+                        self.print_info("You may need to manually restart Docker with: colima ssh -- sudo systemctl restart docker")
+                else:
+                    self.print_error("Failed to update CA certificates in Colima VM")
+            else:
+                self.print_error("Failed to copy certificate to Colima VM")
+    
     def verify_connection(self, tool_name):
         """Verify if a tool can connect through WARP."""
         test_url = "https://www.cloudflare.com"
@@ -1838,6 +1904,34 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
                 self.print_info("  - Android SDK detected")
         else:
             self.print_info("  - Android SDK not installed (would help configure if present)")
+        return has_issues
+
+    def check_colima_status(self, temp_warp_cert):
+        """Check Colima configuration status."""
+        has_issues = False
+        if self.command_exists('colima'):
+            try:
+                result = subprocess.run(['colima', 'status'], capture_output=True, text=True)
+                # Colima outputs status to stderr, not stdout
+                status_output = result.stdout + result.stderr
+                if 'running' in status_output.lower():
+                    # Check if certificate exists in Colima VM
+                    result = subprocess.run(
+                        ['colima', 'ssh', '--', 'test', '-f', '/usr/local/share/ca-certificates/cloudflare-warp.crt'],
+                        capture_output=True
+                    )
+                    if result.returncode == 0:
+                        self.print_info("  ✓ Colima VM has Cloudflare certificate installed")
+                    else:
+                        self.print_warn("  ✗ Colima VM missing Cloudflare certificate")
+                        has_issues = True
+                else:
+                    self.print_info("  - Colima installed but no machine is running")
+                    self.print_info("    Start a machine with: colima start")
+            except:
+                self.print_info("  - Failed to check Colima status")
+        else:
+            self.print_info("  - Colima not installed (would configure VM if present)")
         return has_issues
 
     def check_all_status(self):
