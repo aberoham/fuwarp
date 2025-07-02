@@ -26,6 +26,14 @@ fuwarp (Cloudflare WARP Certificate Fixer Upper) is a Python script that automat
 
 # Show version information
 ./fuwarp.py --version
+
+# List all available tools and their tags
+./fuwarp.py --list-tools
+
+# Check/fix specific tools only
+./fuwarp.py --tools node --tools python  # Check Node.js and Python only
+./fuwarp.py --fix --tools node-npm,gcloud  # Fix Node.js/npm and gcloud only
+./fuwarp.py --fix --tools java,db  # Fix Java and database tools using tags
 ```
 
 ### Testing
@@ -50,6 +58,7 @@ The script follows a modular architecture with these key components:
    - Functions check current configuration before making changes
    - Handle permission issues by suggesting user-writable alternatives
    - Support for: Node.js/npm, Python, gcloud, Java/JVM, DBeaver, wget, Podman, Rancher, Android Emulator
+   - Tools can be selectively processed using `--tools` option with keys or tags
 
 4. **Certificate Verification**:
    - `certificate_exists_in_file()`: Checks if certificate already exists in bundle files

@@ -135,11 +135,79 @@ SHELL_MODIFIED = False
 CERT_FINGERPRINT = ""  # Cache for certificate fingerprint
 
 class FuwarpPython:
-    def __init__(self, mode='status', debug=False):
+    def __init__(self, mode='status', debug=False, selected_tools=None):
         self.mode = mode
         self.debug = debug
         self.shell_modified = False
         self.cert_fingerprint = ""
+        self.selected_tools = selected_tools or []
+        
+        # Define tool registry with tags and descriptions
+        self.tools_registry = {
+            'node': {
+                'name': 'Node.js',
+                'tags': ['node', 'nodejs', 'node-npm', 'javascript', 'js'],
+                'setup_func': self.setup_node_cert,
+                'check_func': self.check_node_status,
+                'description': 'Node.js runtime and npm package manager'
+            },
+            'python': {
+                'name': 'Python',
+                'tags': ['python', 'python3', 'pip', 'requests'],
+                'setup_func': self.setup_python_cert,
+                'check_func': self.check_python_status,
+                'description': 'Python runtime and pip package manager'
+            },
+            'gcloud': {
+                'name': 'Google Cloud SDK',
+                'tags': ['gcloud', 'google-cloud', 'gcp'],
+                'setup_func': self.setup_gcloud_cert,
+                'check_func': self.check_gcloud_status,
+                'description': 'Google Cloud SDK (gcloud CLI)'
+            },
+            'java': {
+                'name': 'Java/JVM',
+                'tags': ['java', 'jvm', 'keytool', 'jdk'],
+                'setup_func': self.setup_java_cert,
+                'check_func': self.check_java_status,
+                'description': 'Java runtime and development kit'
+            },
+            'dbeaver': {
+                'name': 'DBeaver',
+                'tags': ['dbeaver', 'database', 'db'],
+                'setup_func': self.setup_dbeaver_cert,
+                'check_func': self.check_dbeaver_status,
+                'description': 'DBeaver database client'
+            },
+            'wget': {
+                'name': 'wget',
+                'tags': ['wget', 'download'],
+                'setup_func': self.setup_wget_cert,
+                'check_func': self.check_wget_status,
+                'description': 'wget download utility'
+            },
+            'podman': {
+                'name': 'Podman',
+                'tags': ['podman', 'container', 'docker-alternative'],
+                'setup_func': self.setup_podman_cert,
+                'check_func': self.check_podman_status,
+                'description': 'Podman container runtime'
+            },
+            'rancher': {
+                'name': 'Rancher Desktop',
+                'tags': ['rancher', 'rancher-desktop', 'kubernetes', 'k8s'],
+                'setup_func': self.setup_rancher_cert,
+                'check_func': self.check_rancher_status,
+                'description': 'Rancher Desktop Kubernetes'
+            },
+            'android': {
+                'name': 'Android Emulator',
+                'tags': ['android', 'emulator', 'adb'],
+                'setup_func': self.setup_android_emulator_cert,
+                'check_func': self.check_android_status,
+                'description': 'Android SDK emulator'
+            }
+        }
         
         # Add platform check
         if platform.system() != 'Darwin':
@@ -150,6 +218,62 @@ class FuwarpPython:
     
     def is_debug_mode(self):
         return self.debug
+    
+    def should_process_tool(self, tool_key):
+        """Check if a tool should be processed based on selected tools."""
+        if not self.selected_tools:
+            # No selection means process all tools
+            return True
+        
+        tool_info = self.tools_registry.get(tool_key, {})
+        if not tool_info:
+            return False
+        
+        # Check if tool key or any of its tags match the selection
+        for selection in self.selected_tools:
+            selection_lower = selection.lower()
+            if selection_lower == tool_key:
+                return True
+            if selection_lower in [tag.lower() for tag in tool_info.get('tags', [])]:
+                return True
+        
+        return False
+    
+    def get_selected_tools_info(self):
+        """Get information about selected tools."""
+        if not self.selected_tools:
+            return list(self.tools_registry.keys())
+        
+        selected = []
+        for tool_key, tool_info in self.tools_registry.items():
+            if self.should_process_tool(tool_key):
+                selected.append(tool_key)
+        
+        return selected
+    
+    def validate_selected_tools(self):
+        """Validate that selected tools exist and return list of invalid ones."""
+        if not self.selected_tools:
+            return []
+        
+        invalid_tools = []
+        for selection in self.selected_tools:
+            selection_lower = selection.lower()
+            found = False
+            
+            # Check all tools for matching key or tag
+            for tool_key, tool_info in self.tools_registry.items():
+                if selection_lower == tool_key:
+                    found = True
+                    break
+                if selection_lower in [tag.lower() for tag in tool_info.get('tags', [])]:
+                    found = True
+                    break
+            
+            if not found:
+                invalid_tools.append(selection)
+        
+        return invalid_tools
     
     # Printing functions
     def print_info(self, msg):
@@ -1441,6 +1565,281 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
         self.print_debug(f"Test result for {tool_name}: {result}")
         return result
     
+    def check_node_status(self, temp_warp_cert):
+        """Check Node.js configuration status."""
+        has_issues = False
+        if self.command_exists('node'):
+            node_extra_ca_certs = os.environ.get('NODE_EXTRA_CA_CERTS', '')
+            if node_extra_ca_certs:
+                self.print_info(f"  NODE_EXTRA_CA_CERTS is set to: {node_extra_ca_certs}")
+                if os.path.exists(node_extra_ca_certs):
+                    if self.certificate_exists_in_file(temp_warp_cert, node_extra_ca_certs):
+                        self.print_info("  ✓ NODE_EXTRA_CA_CERTS contains current WARP certificate")
+                        verify_result = self.verify_connection("node")
+                        if verify_result == "WORKING":
+                            self.print_info("  ✓ Node.js can connect through WARP")
+                        else:
+                            self.print_warn("  ✗ Node.js connection test failed")
+                            has_issues = True
+                    else:
+                        self.print_warn("  ✗ NODE_EXTRA_CA_CERTS file exists but doesn't contain current WARP certificate")
+                        self.print_action("    Run with --fix to append the certificate to this file")
+                        has_issues = True
+                else:
+                    self.print_warn(f"  ✗ NODE_EXTRA_CA_CERTS points to non-existent file: {node_extra_ca_certs}")
+                    has_issues = True
+            else:
+                self.print_warn("  ✗ NODE_EXTRA_CA_CERTS not configured")
+                has_issues = True
+            
+            # Check npm
+            if self.command_exists('npm'):
+                try:
+                    result = subprocess.run(['npm', 'config', 'get', 'cafile'], capture_output=True, text=True)
+                    npm_cafile = result.stdout.strip() if result.returncode == 0 else ""
+                    
+                    if npm_cafile and npm_cafile not in ["null", "undefined"]:
+                        if os.path.exists(npm_cafile):
+                            if self.certificate_exists_in_file(temp_warp_cert, npm_cafile):
+                                self.print_info("  ✓ npm cafile contains current WARP certificate")
+                            else:
+                                self.print_warn("  ✗ npm cafile doesn't contain current WARP certificate")
+                                has_issues = True
+                        else:
+                            self.print_warn("  ✗ npm cafile points to non-existent file")
+                            has_issues = True
+                    else:
+                        self.print_warn("  ✗ npm cafile not configured")
+                        has_issues = True
+                except:
+                    pass
+        else:
+            self.print_info("  - Node.js not installed")
+        return has_issues
+
+    def check_python_status(self, temp_warp_cert):
+        """Check Python configuration status."""
+        has_issues = False
+        if self.command_exists('python3') or self.command_exists('python'):
+            # First check if Python trusts the system certificate
+            python_verify_result = self.verify_connection("python")
+            
+            if python_verify_result == "WORKING":
+                self.print_info("  ✓ Python trusts the system Cloudflare WARP certificate")
+                self.print_info("  ✓ Python can connect through WARP without additional configuration")
+            else:
+                # Python doesn't trust system cert, check environment variables
+                python_configured = False
+                
+                requests_ca_bundle = os.environ.get('REQUESTS_CA_BUNDLE', '')
+                if requests_ca_bundle:
+                    self.print_info(f"  REQUESTS_CA_BUNDLE is set to: {requests_ca_bundle}")
+                    if os.path.exists(requests_ca_bundle):
+                        if self.certificate_exists_in_file(temp_warp_cert, requests_ca_bundle):
+                            self.print_info("  ✓ REQUESTS_CA_BUNDLE contains current WARP certificate")
+                            python_configured = True
+                        else:
+                            self.print_warn("  ✗ REQUESTS_CA_BUNDLE file exists but doesn't contain current WARP certificate")
+                            self.print_action("    Run with --fix to create a new bundle with both certificates")
+                    else:
+                        self.print_warn(f"  ✗ REQUESTS_CA_BUNDLE points to non-existent file: {requests_ca_bundle}")
+                
+                # Also check SSL_CERT_FILE if set
+                ssl_cert_file = os.environ.get('SSL_CERT_FILE', '')
+                if ssl_cert_file:
+                    self.print_info(f"  SSL_CERT_FILE is set to: {ssl_cert_file}")
+                    if os.path.exists(ssl_cert_file):
+                        if self.certificate_exists_in_file(temp_warp_cert, ssl_cert_file):
+                            self.print_info("  ✓ SSL_CERT_FILE contains current WARP certificate")
+                            python_configured = True
+                
+                if not python_configured:
+                    if not requests_ca_bundle and not ssl_cert_file:
+                        self.print_warn("  ✗ Python does not trust system certificate by default")
+                        self.print_warn("  ✗ No Python certificate environment variables configured")
+                        has_issues = True
+                    else:
+                        has_issues = True
+        else:
+            self.print_info("  - Python not installed")
+        return has_issues
+
+    def check_gcloud_status(self, temp_warp_cert):
+        """Check gcloud configuration status."""
+        has_issues = False
+        if self.command_exists('gcloud'):
+            try:
+                result = subprocess.run(
+                    ['gcloud', 'config', 'get-value', 'core/custom_ca_certs_file'],
+                    capture_output=True, text=True
+                )
+                gcloud_ca = result.stdout.strip() if result.returncode == 0 else ""
+                
+                if gcloud_ca and os.path.exists(gcloud_ca):
+                    if self.certificate_exists_in_file(temp_warp_cert, gcloud_ca):
+                        self.print_info("  ✓ gcloud configured with current WARP certificate")
+                    else:
+                        self.print_warn("  ✗ gcloud CA file doesn't contain current WARP certificate")
+                        has_issues = True
+                else:
+                    self.print_warn("  ✗ gcloud not configured with custom CA")
+                    has_issues = True
+            except:
+                self.print_warn("  ✗ Failed to check gcloud configuration")
+                has_issues = True
+        else:
+            self.print_info("  - gcloud not installed (would configure if present)")
+        return has_issues
+
+    def check_java_status(self, temp_warp_cert):
+        """Check Java configuration status."""
+        has_issues = False
+        if self.command_exists('java') or self.command_exists('keytool'):
+            if self.command_exists('keytool'):
+                try:
+                    result = subprocess.run(
+                        ['keytool', '-list', '-alias', 'cloudflare-zerotrust', '-cacerts', '-storepass', 'changeit'],
+                        capture_output=True
+                    )
+                    if result.returncode == 0 and 'cloudflare-zerotrust' in result.stdout.decode():
+                        self.print_info("  ✓ Java keystore contains Cloudflare certificate")
+                    else:
+                        self.print_warn("  ✗ Java keystore missing Cloudflare certificate")
+                        has_issues = True
+                except:
+                    self.print_warn("  ✗ Failed to check Java keystore")
+                    has_issues = True
+            else:
+                self.print_warn("  ✗ keytool not found")
+                has_issues = True
+        else:
+            self.print_info("  - Java not installed (would configure if present)")
+        return has_issues
+
+    def check_dbeaver_status(self, temp_warp_cert):
+        """Check DBeaver configuration status."""
+        has_issues = False
+        dbeaver_app = "/Applications/DBeaver.app"
+        if os.path.exists(dbeaver_app):
+            dbeaver_keytool = f"{dbeaver_app}/Contents/Eclipse/jre/Contents/Home/bin/keytool"
+            dbeaver_cacerts = f"{dbeaver_app}/Contents/Eclipse/jre/Contents/Home/lib/security/cacerts"
+            if os.path.exists(dbeaver_keytool) and os.path.exists(dbeaver_cacerts):
+                try:
+                    result = subprocess.run(
+                        [dbeaver_keytool, '-list', '-alias', 'cloudflare-zerotrust',
+                         '-keystore', dbeaver_cacerts, '-storepass', 'changeit'],
+                        capture_output=True
+                    )
+                    if result.returncode == 0 and 'cloudflare-zerotrust' in result.stdout.decode():
+                        self.print_info("  ✓ DBeaver keystore contains Cloudflare certificate")
+                    else:
+                        self.print_warn("  ✗ DBeaver keystore missing Cloudflare certificate")
+                        has_issues = True
+                except:
+                    self.print_warn("  ✗ Failed to check DBeaver keystore")
+                    has_issues = True
+            else:
+                self.print_warn("  ✗ DBeaver JRE not found at expected location")
+        else:
+            self.print_info("  - DBeaver not installed at /Applications/DBeaver.app")
+        return has_issues
+
+    def check_wget_status(self, temp_warp_cert):
+        """Check wget configuration status."""
+        has_issues = False
+        if self.command_exists('wget'):
+            wgetrc_path = os.path.expanduser("~/.wgetrc")
+            if os.path.exists(wgetrc_path):
+                with open(wgetrc_path, 'r') as f:
+                    content = f.read()
+                if "ca_certificate=" in content and CERT_PATH in content:
+                    self.print_info("  ✓ wget configured with Cloudflare certificate")
+                    verify_result = self.verify_connection("wget")
+                    if verify_result == "WORKING":
+                        self.print_info("  ✓ wget can connect through WARP")
+                    else:
+                        self.print_warn("  ✗ wget connection test failed")
+                        has_issues = True
+                else:
+                    self.print_warn("  ✗ wget not configured with Cloudflare certificate")
+                    has_issues = True
+            else:
+                self.print_warn("  ✗ wget not configured")
+                has_issues = True
+        else:
+            self.print_info("  - wget not installed")
+        return has_issues
+
+    def check_podman_status(self, temp_warp_cert):
+        """Check Podman configuration status."""
+        has_issues = False
+        if self.command_exists('podman'):
+            try:
+                result = subprocess.run(['podman', 'machine', 'list'], capture_output=True, text=True)
+                if 'Currently running' in result.stdout:
+                    # Check if certificate exists in Podman VM
+                    result = subprocess.run(
+                        ['podman', 'machine', 'ssh', 'test -f /etc/pki/ca-trust/source/anchors/cloudflare-warp.pem'],
+                        capture_output=True
+                    )
+                    if result.returncode == 0:
+                        self.print_info("  ✓ Podman VM has Cloudflare certificate installed")
+                    else:
+                        self.print_warn("  ✗ Podman VM missing Cloudflare certificate")
+                        has_issues = True
+                else:
+                    self.print_info("  - Podman installed but no machine is running")
+                    self.print_info("    Start a machine with: podman machine start")
+            except:
+                self.print_info("  - Failed to check Podman status")
+        else:
+            self.print_info("  - Podman not installed (would configure VM if present)")
+        return has_issues
+
+    def check_rancher_status(self, temp_warp_cert):
+        """Check Rancher Desktop configuration status."""
+        has_issues = False
+        if self.command_exists('rdctl'):
+            try:
+                # Try to check if Rancher is running
+                result = subprocess.run(['rdctl', 'version'], capture_output=True, text=True)
+                if 'rdctl' in result.stdout:
+                    # Check if certificate exists in Rancher VM
+                    result = subprocess.run(
+                        ['rdctl', 'shell', 'test -f /usr/local/share/ca-certificates/cloudflare-warp.pem'],
+                        capture_output=True
+                    )
+                    if result.returncode == 0:
+                        self.print_info("  ✓ Rancher Desktop VM has Cloudflare certificate installed")
+                    else:
+                        self.print_warn("  ✗ Rancher Desktop VM missing Cloudflare certificate")
+                        has_issues = True
+                else:
+                    self.print_info("  - Rancher Desktop installed but not running")
+            except:
+                self.print_info("  - Rancher Desktop installed but not running")
+        else:
+            self.print_info("  - Rancher Desktop not installed (would configure if present)")
+        return has_issues
+
+    def check_android_status(self, temp_warp_cert):
+        """Check Android Emulator configuration status."""
+        has_issues = False
+        if self.command_exists('adb') and self.command_exists('emulator'):
+            try:
+                result = subprocess.run(['adb', 'devices'], capture_output=True, text=True)
+                running_emulators = sum(1 for line in result.stdout.splitlines() if 'emulator-' in line)
+                if running_emulators > 0:
+                    self.print_info("  - Android emulator detected (manual installation available)")
+                    self.print_info("    Run with --fix to see installation instructions")
+                else:
+                    self.print_info("  - Android SDK detected but no emulator running")
+            except:
+                self.print_info("  - Android SDK detected")
+        else:
+            self.print_info("  - Android SDK not installed (would help configure if present)")
+        return has_issues
+
     def check_all_status(self):
         """Check status of all configurations."""
         has_issues = False
@@ -1560,315 +1959,67 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
             has_issues = True
         print()
         
-        # Check Node.js configuration
-        self.print_status("Node.js Configuration:")
-        if self.command_exists('node'):
-            node_extra_ca_certs = os.environ.get('NODE_EXTRA_CA_CERTS', '')
-            if node_extra_ca_certs:
-                self.print_info(f"  NODE_EXTRA_CA_CERTS is set to: {node_extra_ca_certs}")
-                if os.path.exists(node_extra_ca_certs):
-                    if self.certificate_exists_in_file(temp_warp_cert, node_extra_ca_certs):
-                        self.print_info("  ✓ NODE_EXTRA_CA_CERTS contains current WARP certificate")
-                        verify_result = self.verify_connection("node")
-                        if verify_result == "WORKING":
-                            self.print_info("  ✓ Node.js can connect through WARP")
-                        else:
-                            self.print_warn("  ✗ Node.js connection test failed")
-                            has_issues = True
-                    else:
-                        self.print_warn("  ✗ NODE_EXTRA_CA_CERTS file exists but doesn't contain current WARP certificate")
-                        self.print_action("    Run with --fix to append the certificate to this file")
-                        has_issues = True
-                else:
-                    self.print_warn(f"  ✗ NODE_EXTRA_CA_CERTS points to non-existent file: {node_extra_ca_certs}")
-                    has_issues = True
-            else:
-                self.print_warn("  ✗ NODE_EXTRA_CA_CERTS not configured")
-                has_issues = True
+        # Display selected tools info if filtering
+        if self.selected_tools:
+            selected_tools_info = self.get_selected_tools_info()
+            self.print_info(f"Selected tools: {', '.join(selected_tools_info)}")
+            print()
+        
+        # Check each tool
+        for tool_key, tool_info in self.tools_registry.items():
+            if not self.should_process_tool(tool_key):
+                continue
             
-            # Check npm
-            if self.command_exists('npm'):
-                try:
-                    result = subprocess.run(['npm', 'config', 'get', 'cafile'], capture_output=True, text=True)
-                    npm_cafile = result.stdout.strip() if result.returncode == 0 else ""
-                    
-                    if npm_cafile and npm_cafile not in ["null", "undefined"]:
-                        if os.path.exists(npm_cafile):
-                            if self.certificate_exists_in_file(temp_warp_cert, npm_cafile):
-                                self.print_info("  ✓ npm cafile contains current WARP certificate")
-                            else:
-                                self.print_warn("  ✗ npm cafile doesn't contain current WARP certificate")
-                                has_issues = True
-                        else:
-                            self.print_warn("  ✗ npm cafile points to non-existent file")
-                            has_issues = True
-                    else:
-                        self.print_warn("  ✗ npm cafile not configured")
-                        has_issues = True
-                except:
-                    pass
-        else:
-            self.print_info("  - Node.js not installed")
-        print()
-        
-        # Check Python configuration
-        self.print_status("Python Configuration:")
-        if self.command_exists('python3') or self.command_exists('python'):
-            # First check if Python trusts the system certificate
-            python_verify_result = self.verify_connection("python")
-            
-            if python_verify_result == "WORKING":
-                self.print_info("  ✓ Python trusts the system Cloudflare WARP certificate")
-                self.print_info("  ✓ Python can connect through WARP without additional configuration")
-            else:
-                # Python doesn't trust system cert, check environment variables
-                python_configured = False
-                
-                requests_ca_bundle = os.environ.get('REQUESTS_CA_BUNDLE', '')
-                if requests_ca_bundle:
-                    self.print_info(f"  REQUESTS_CA_BUNDLE is set to: {requests_ca_bundle}")
-                    if os.path.exists(requests_ca_bundle):
-                        if self.certificate_exists_in_file(temp_warp_cert, requests_ca_bundle):
-                            self.print_info("  ✓ REQUESTS_CA_BUNDLE contains current WARP certificate")
-                            python_configured = True
-                        else:
-                            self.print_warn("  ✗ REQUESTS_CA_BUNDLE file exists but doesn't contain current WARP certificate")
-                            self.print_action("    Run with --fix to create a new bundle with both certificates")
-                    else:
-                        self.print_warn(f"  ✗ REQUESTS_CA_BUNDLE points to non-existent file: {requests_ca_bundle}")
-                
-                # Also check SSL_CERT_FILE if set
-                ssl_cert_file = os.environ.get('SSL_CERT_FILE', '')
-                if ssl_cert_file:
-                    self.print_info(f"  SSL_CERT_FILE is set to: {ssl_cert_file}")
-                    if os.path.exists(ssl_cert_file):
-                        if self.certificate_exists_in_file(temp_warp_cert, ssl_cert_file):
-                            self.print_info("  ✓ SSL_CERT_FILE contains current WARP certificate")
-                            python_configured = True
-                
-                if not python_configured:
-                    if not requests_ca_bundle and not ssl_cert_file:
-                        self.print_warn("  ✗ Python does not trust system certificate by default")
-                        self.print_warn("  ✗ No Python certificate environment variables configured")
-                        has_issues = True
-                    else:
-                        has_issues = True
-        else:
-            self.print_info("  - Python not installed")
-        print()
-        
-        # Check curl configuration
-        self.print_status("curl Configuration:")
-        if self.command_exists('curl'):
-            verify_result = self.verify_connection("curl")
-            if verify_result == "WORKING":
-                self.print_info("  ✓ curl can connect through WARP")
-                # Check if it's using SecureTransport (macOS system curl)
-                try:
-                    result = subprocess.run(['curl', '--version'], capture_output=True, text=True)
-                    if 'SecureTransport' in result.stdout:
-                        self.print_info("  ✓ Using macOS system curl with SecureTransport (uses system keychain)")
-                    elif os.environ.get('CURL_CA_BUNDLE'):
-                        self.print_info(f"  ✓ CURL_CA_BUNDLE is set to: {os.environ['CURL_CA_BUNDLE']}")
-                except:
-                    pass
-            else:
-                if os.environ.get('CURL_CA_BUNDLE'):
-                    self.print_info("  ✓ CURL_CA_BUNDLE is set")
-                else:
-                    self.print_warn("  ✗ curl connection test failed and CURL_CA_BUNDLE not set")
+            self.print_status(f"{tool_info['name']} Configuration:")
+            if tool_info.get('check_func'):
+                tool_has_issues = tool_info['check_func'](temp_warp_cert)
+                if tool_has_issues:
                     has_issues = True
-        else:
-            self.print_info("  - curl not installed")
-        print()
-        
-        # Check wget configuration
-        self.print_status("wget Configuration:")
-        if self.command_exists('wget'):
-            wgetrc_path = os.path.expanduser("~/.wgetrc")
-            if os.path.exists(wgetrc_path):
-                with open(wgetrc_path, 'r') as f:
-                    content = f.read()
-                if "ca_certificate=" in content and CERT_PATH in content:
-                    self.print_info("  ✓ wget configured with Cloudflare certificate")
-                    verify_result = self.verify_connection("wget")
-                    if verify_result == "WORKING":
-                        self.print_info("  ✓ wget can connect through WARP")
-                    else:
-                        self.print_warn("  ✗ wget connection test failed")
-                        has_issues = True
+            print()
+        # Check curl configuration if not filtering
+        if not self.selected_tools:
+            self.print_status("curl Configuration:")
+            if self.command_exists('curl'):
+                verify_result = self.verify_connection("curl")
+                if verify_result == "WORKING":
+                    self.print_info("  ✓ curl can connect through WARP")
+                    # Check if it's using SecureTransport (macOS system curl)
+                    try:
+                        result = subprocess.run(['curl', '--version'], capture_output=True, text=True)
+                        if 'SecureTransport' in result.stdout:
+                            self.print_info("  ✓ Using macOS system curl with SecureTransport (uses system keychain)")
+                        elif os.environ.get('CURL_CA_BUNDLE'):
+                            self.print_info(f"  ✓ CURL_CA_BUNDLE is set to: {os.environ['CURL_CA_BUNDLE']}")
+                    except:
+                        pass
                 else:
-                    self.print_warn("  ✗ wget not configured with Cloudflare certificate")
-                    has_issues = True
+                    if os.environ.get('CURL_CA_BUNDLE'):
+                        self.print_info("  ✓ CURL_CA_BUNDLE is set")
+                    else:
+                        self.print_warn("  ✗ curl connection test failed and CURL_CA_BUNDLE not set")
+                        has_issues = True
             else:
-                self.print_warn("  ✗ wget not configured")
-                has_issues = True
-        else:
-            self.print_info("  - wget not installed")
-        print()
-        
-        # Check Java configuration
-        self.print_status("Java Configuration:")
-        if self.command_exists('java') or self.command_exists('keytool'):
-            if self.command_exists('keytool'):
-                try:
-                    result = subprocess.run(
-                        ['keytool', '-list', '-alias', 'cloudflare-zerotrust', '-cacerts', '-storepass', 'changeit'],
-                        capture_output=True
-                    )
-                    if result.returncode == 0 and 'cloudflare-zerotrust' in result.stdout.decode():
-                        self.print_info("  ✓ Java keystore contains Cloudflare certificate")
-                    else:
-                        self.print_warn("  ✗ Java keystore missing Cloudflare certificate")
-                        has_issues = True
-                except:
-                    self.print_warn("  ✗ Failed to check Java keystore")
-                    has_issues = True
+                self.print_info("  - curl not installed")
+            print()
+        # Check Docker configuration if not filtering
+        if not self.selected_tools:
+            self.print_status("Docker Configuration:")
+            if self.command_exists('docker'):
+                self.print_info("  - Docker detected")
+                self.print_info("    Note: Docker daemon certificate configuration varies by platform")
+                self.print_info("    You may need to add certificates to Docker images directly")
             else:
-                self.print_warn("  ✗ keytool not found")
-                has_issues = True
-        else:
-            self.print_info("  - Java not installed (would configure if present)")
-        print()
-        
-        # Check gcloud configuration
-        self.print_status("gcloud Configuration:")
-        if self.command_exists('gcloud'):
-            try:
-                result = subprocess.run(
-                    ['gcloud', 'config', 'get-value', 'core/custom_ca_certs_file'],
-                    capture_output=True, text=True
-                )
-                gcloud_ca = result.stdout.strip() if result.returncode == 0 else ""
-                
-                if gcloud_ca and os.path.exists(gcloud_ca):
-                    if self.certificate_exists_in_file(temp_warp_cert, gcloud_ca):
-                        self.print_info("  ✓ gcloud configured with current WARP certificate")
-                    else:
-                        self.print_warn("  ✗ gcloud CA file doesn't contain current WARP certificate")
-                        has_issues = True
-                else:
-                    self.print_warn("  ✗ gcloud not configured with custom CA")
-                    has_issues = True
-            except:
-                self.print_warn("  ✗ Failed to check gcloud configuration")
-                has_issues = True
-        else:
-            self.print_info("  - gcloud not installed (would configure if present)")
-        print()
-        
-        # Check DBeaver configuration
-        self.print_status("DBeaver Configuration:")
-        dbeaver_app = "/Applications/DBeaver.app"
-        if os.path.exists(dbeaver_app):
-            dbeaver_keytool = f"{dbeaver_app}/Contents/Eclipse/jre/Contents/Home/bin/keytool"
-            dbeaver_cacerts = f"{dbeaver_app}/Contents/Eclipse/jre/Contents/Home/lib/security/cacerts"
-            if os.path.exists(dbeaver_keytool) and os.path.exists(dbeaver_cacerts):
-                try:
-                    result = subprocess.run(
-                        [dbeaver_keytool, '-list', '-alias', 'cloudflare-zerotrust',
-                         '-keystore', dbeaver_cacerts, '-storepass', 'changeit'],
-                        capture_output=True
-                    )
-                    if result.returncode == 0 and 'cloudflare-zerotrust' in result.stdout.decode():
-                        self.print_info("  ✓ DBeaver keystore contains Cloudflare certificate")
-                    else:
-                        self.print_warn("  ✗ DBeaver keystore missing Cloudflare certificate")
-                        has_issues = True
-                except:
-                    self.print_warn("  ✗ Failed to check DBeaver keystore")
-                    has_issues = True
-            else:
-                self.print_warn("  ✗ DBeaver JRE not found at expected location")
-        else:
-            self.print_info("  - DBeaver not installed at /Applications/DBeaver.app")
-        print()
-        
-        # Check Podman configuration
-        self.print_status("Podman Configuration:")
-        if self.command_exists('podman'):
-            try:
-                result = subprocess.run(['podman', 'machine', 'list'], capture_output=True, text=True)
-                if 'Currently running' in result.stdout:
-                    # Check if certificate exists in Podman VM
-                    result = subprocess.run(
-                        ['podman', 'machine', 'ssh', 'test -f /etc/pki/ca-trust/source/anchors/cloudflare-warp.pem'],
-                        capture_output=True
-                    )
-                    if result.returncode == 0:
-                        self.print_info("  ✓ Podman VM has Cloudflare certificate installed")
-                    else:
-                        self.print_warn("  ✗ Podman VM missing Cloudflare certificate")
-                        has_issues = True
-                else:
-                    self.print_info("  - Podman installed but no machine is running")
-                    self.print_info("    Start a machine with: podman machine start")
-            except:
-                self.print_info("  - Failed to check Podman status")
-        else:
-            self.print_info("  - Podman not installed (would configure VM if present)")
-        print()
-        
-        # Check Rancher Desktop configuration
-        self.print_status("Rancher Desktop Configuration:")
-        if self.command_exists('rdctl'):
-            try:
-                # Try to check if Rancher is running
-                result = subprocess.run(['rdctl', 'version'], capture_output=True, text=True)
-                if 'rdctl' in result.stdout:
-                    # Check if certificate exists in Rancher VM
-                    result = subprocess.run(
-                        ['rdctl', 'shell', 'test -f /usr/local/share/ca-certificates/cloudflare-warp.pem'],
-                        capture_output=True
-                    )
-                    if result.returncode == 0:
-                        self.print_info("  ✓ Rancher Desktop VM has Cloudflare certificate installed")
-                    else:
-                        self.print_warn("  ✗ Rancher Desktop VM missing Cloudflare certificate")
-                        has_issues = True
-                else:
-                    self.print_info("  - Rancher Desktop installed but not running")
-            except:
-                self.print_info("  - Rancher Desktop installed but not running")
-        else:
-            self.print_info("  - Rancher Desktop not installed (would configure if present)")
-        print()
-        
-        # Check Docker configuration
-        self.print_status("Docker Configuration:")
-        if self.command_exists('docker'):
-            self.print_info("  - Docker detected")
-            self.print_info("    Note: Docker daemon certificate configuration varies by platform")
-            self.print_info("    You may need to add certificates to Docker images directly")
-        else:
-            self.print_info("  - Docker not installed")
-        print()
-        
-        # Check Android Emulator
-        self.print_status("Android Emulator Configuration:")
-        if self.command_exists('adb') and self.command_exists('emulator'):
-            try:
-                result = subprocess.run(['adb', 'devices'], capture_output=True, text=True)
-                running_emulators = sum(1 for line in result.stdout.splitlines() if 'emulator-' in line)
-                if running_emulators > 0:
-                    self.print_info("  - Android emulator detected (manual installation available)")
-                    self.print_info("    Run with --fix to see installation instructions")
-                else:
-                    self.print_info("  - Android SDK detected but no emulator running")
-            except:
-                self.print_info("  - Android SDK detected")
-        else:
-            self.print_info("  - Android SDK not installed (would help configure if present)")
-        print()
-        
-        # Show information about additional tools
-        self.print_status("Additional Tools (not yet automated):")
-        self.print_info("  - RubyGems/Bundler: May work with SSL_CERT_FILE environment variable")
-        self.print_info("  - PHP/Composer: May need CURL_CA_BUNDLE and php.ini configuration")
-        self.print_info("  - Git: May need 'git config --global http.sslCAInfo' setting")
-        self.print_info("  - Firefox: Uses its own certificate store in profile")
-        self.print_info("  - Other Homebrew tools: May need individual configuration")
-        print()
+                self.print_info("  - Docker not installed")
+            print()
+        # Show information about additional tools if not filtering
+        if not self.selected_tools:
+            self.print_status("Additional Tools (not yet automated):")
+            self.print_info("  - RubyGems/Bundler: May work with SSL_CERT_FILE environment variable")
+            self.print_info("  - PHP/Composer: May need CURL_CA_BUNDLE and php.ini configuration")
+            self.print_info("  - Git: May need 'git config --global http.sslCAInfo' setting")
+            self.print_info("  - Firefox: Uses its own certificate store in profile")
+            self.print_info("  - Other Homebrew tools: May need individual configuration")
+            print()
         
         # Summary
         self.print_info("Summary:")
@@ -1906,7 +2057,23 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
                     self.print_debug("Status mode: Using fast certificate checks")
                 else:
                     self.print_debug("Install mode: Using thorough certificate checks")
+                if self.selected_tools:
+                    self.print_debug(f"Selected tools: {', '.join(self.selected_tools)}")
                 print()
+            
+            # Validate selected tools
+            if self.selected_tools:
+                invalid_tools = self.validate_selected_tools()
+                if invalid_tools:
+                    self.print_error(f"Invalid tool selection: {', '.join(invalid_tools)}")
+                    self.print_info("Use --list-tools to see available tools and their tags")
+                    return 1
+                
+                # Show which tools will be processed
+                selected_info = self.get_selected_tools_info()
+                if not selected_info:
+                    self.print_warn("No tools match your selection")
+                    return 1
             
             if not self.is_install_mode():
                 # In status mode, just check current status
@@ -1921,15 +2088,14 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
                     return 1
                 
                 # Setup for different environments
-                self.setup_node_cert()
-                self.setup_python_cert()
-                self.setup_gcloud_cert()
-                self.setup_java_cert()
-                self.setup_dbeaver_cert()
-                self.setup_wget_cert()
-                self.setup_podman_cert()
-                self.setup_rancher_cert()
-                self.setup_android_emulator_cert()
+                if self.selected_tools:
+                    self.print_info(f"Processing selected tools: {', '.join(self.get_selected_tools_info())}")
+                    print()
+                
+                for tool_key, tool_info in self.tools_registry.items():
+                    if self.should_process_tool(tool_key):
+                        if tool_info.get('setup_func'):
+                            tool_info['setup_func']()
                 
                 # Final message
                 print()
@@ -1977,17 +2143,16 @@ def main():
     parser = argparse.ArgumentParser(
         description=__description__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=f"""
-{version_str}
-Author: {__author__}
-
-By default, this fuwarp.py runs in status check mode and shows what is
-currently configured without making any changes.
-        """
+        epilog=f"{version_str} | Author: {__author__} | Default: status check only (use --fix to make changes)"
     )
     
     parser.add_argument('--fix', action='store_true',
                         help='Actually make changes (default is status check only)')
+    parser.add_argument('--tools', '--tool', action='append', dest='tools',
+                        help='Specific tools to check/fix (can be specified multiple times). '
+                             'Examples: --tools node --tools python or --tools node-npm,gcloud')
+    parser.add_argument('--list-tools', action='store_true',
+                        help='List all available tools and their tags')
     parser.add_argument('--debug', '--verbose', action='store_true',
                         help='Show detailed debug information')
     parser.add_argument('--version', action='version',
@@ -1995,11 +2160,29 @@ currently configured without making any changes.
     
     args = parser.parse_args()
     
+    # Handle --list-tools first
+    if args.list_tools:
+        # Create a temporary instance just to access the registry
+        temp_fuwarp = FuwarpPython()
+        print("Available tools:")
+        for tool_key, tool_info in temp_fuwarp.tools_registry.items():
+            tags_str = ', '.join(tool_info['tags'])
+            print(f"  {tool_key:<10} - {tool_info['name']:<20} Tags: {tags_str}")
+        print("\nExamples: ./fuwarp.py --fix --tools node,python  or  ./fuwarp.py --fix --tools node-npm --tools gcp")
+        sys.exit(0)
+    
+    # Process --tools argument
+    selected_tools = []
+    if args.tools:
+        for tool_arg in args.tools:
+            # Split by comma to allow comma-separated lists
+            selected_tools.extend([t.strip() for t in tool_arg.split(',') if t.strip()])
+    
     # Determine mode
     mode = 'install' if args.fix else 'status'
     
     # Create and run fuwarp instance
-    fuwarp = FuwarpPython(mode=mode, debug=args.debug)
+    fuwarp = FuwarpPython(mode=mode, debug=args.debug, selected_tools=selected_tools)
     exit_code = fuwarp.main()
     sys.exit(exit_code)
 
