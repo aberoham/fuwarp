@@ -172,6 +172,13 @@ class FuwarpPython:
                 'check_func': self.check_java_status,
                 'description': 'Java runtime and development kit'
             },
+            'gradle': {
+                'name': 'Gradle',
+                'tags': ['gradle'],
+                'setup_func': self.setup_gradle_cert,
+                'check_func': self.check_gradle_status,
+                'description': 'Gradle build tool'
+            },
             'dbeaver': {
                 'name': 'DBeaver',
                 'tags': ['dbeaver', 'database', 'db'],
@@ -391,6 +398,101 @@ class FuwarpPython:
             except Exception as e:
                 self.print_debug(f"Error getting fingerprint: {e}")
         return ""
+
+    def find_java_home(self):
+        """Locate JAVA_HOME using environment and command fallbacks."""
+        java_home = os.environ.get('JAVA_HOME', '')
+        if not java_home and self.command_exists('java'):
+            try:
+                if platform.system() == 'Darwin' and os.path.exists('/usr/libexec/java_home'):
+                    result = subprocess.run(['/usr/libexec/java_home'], capture_output=True, text=True)
+                    if result.returncode == 0:
+                        java_home = result.stdout.strip()
+
+                if not java_home:
+                    result = subprocess.run(
+                        ['java', '-XshowSettings:properties', '-version'],
+                        capture_output=True, text=True, stderr=subprocess.STDOUT
+                    )
+                    for line in result.stdout.splitlines():
+                        if 'java.home' in line:
+                            java_home = line.split('=')[1].strip()
+                            break
+            except Exception as e:
+                self.print_debug(f"Error finding JAVA_HOME: {e}")
+        return java_home
+
+    def find_java_cacerts(self, java_home=None):
+        """Locate Java cacerts file."""
+        if java_home is None:
+            java_home = self.find_java_home()
+        if not java_home:
+            return ''
+        cacerts = os.path.join(java_home, 'lib/security/cacerts')
+        if not os.path.exists(cacerts):
+            cacerts = os.path.join(java_home, 'jre/lib/security/cacerts')
+        return cacerts if os.path.exists(cacerts) else ''
+
+    def get_gradle_properties_path(self):
+        """Get path to Gradle properties file respecting GRADLE_USER_HOME."""
+        gradle_home = os.environ.get('GRADLE_USER_HOME', os.path.expanduser('~/.gradle'))
+        return os.path.join(gradle_home, 'gradle.properties')
+
+    def read_properties_file(self, path):
+        """Read Java-style .properties file into a dict."""
+        props = {}
+        if os.path.exists(path):
+            with open(path, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if '=' in line and not line.startswith('#'):
+                        key, val = line.split('=', 1)
+                        props[key] = val
+        return props
+
+    def update_properties_file(self, path, props_to_set, desc="properties"):
+        """Update key/value pairs in a .properties file."""
+        existing_lines = []
+        if os.path.exists(path):
+            with open(path, 'r') as f:
+                existing_lines = f.readlines()
+
+        current_props = {}
+        for line in existing_lines:
+            line = line.strip()
+            if '=' in line and not line.startswith('#'):
+                key, val = line.split('=', 1)
+                current_props[key] = val
+
+        if all(current_props.get(k) == v for k, v in props_to_set.items()):
+            return False
+
+        self.print_info(f"Setting up {desc}...")
+
+        updated_lines = []
+        remaining = props_to_set.copy()
+        for line in existing_lines:
+            stripped = line.strip()
+            replaced = False
+            for key in list(remaining):
+                if stripped.startswith(key + '='):
+                    updated_lines.append(f"{key}={remaining.pop(key)}\n")
+                    replaced = True
+                    break
+            if not replaced:
+                updated_lines.append(line)
+
+        for key, value in remaining.items():
+            updated_lines.append(f"{key}={value}\n")
+
+        if not self.is_install_mode():
+            self.print_action(f"Would update {desc} at {path}")
+        else:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, 'w') as f:
+                f.writelines(updated_lines)
+            self.print_info(f"Updated {desc} at {path}")
+        return True
     
     def certificate_likely_exists_in_file(self, cert_file, target_file):
         """Fast certificate check using grep (for status mode)."""
@@ -1083,38 +1185,13 @@ class FuwarpPython:
         if not self.command_exists('java') and not self.command_exists('keytool'):
             return
         
-        # Better error handling for finding JAVA_HOME
-        java_home = os.environ.get('JAVA_HOME', '')
-        if not java_home and self.command_exists('java'):
-            try:
-                # First try /usr/libexec/java_home on macOS
-                if platform.system() == 'Darwin' and os.path.exists('/usr/libexec/java_home'):
-                    result = subprocess.run(['/usr/libexec/java_home'], capture_output=True, text=True)
-                    if result.returncode == 0:
-                        java_home = result.stdout.strip()
-                
-                # Fallback to java -XshowSettings
-                if not java_home:
-                    result = subprocess.run(
-                        ['java', '-XshowSettings:properties', '-version'],
-                        capture_output=True, text=True, stderr=subprocess.STDOUT
-                    )
-                    for line in result.stdout.splitlines():
-                        if 'java.home' in line:
-                            java_home = line.split('=')[1].strip()
-                            break
-            except Exception as e:
-                self.print_debug(f"Error finding JAVA_HOME: {e}")
-
+        java_home = self.find_java_home()
         if not java_home:
             self.print_warn("Could not determine JAVA_HOME")
             return
-        
-        cacerts = os.path.join(java_home, "lib/security/cacerts")
-        if not os.path.exists(cacerts):
-            cacerts = os.path.join(java_home, "jre/lib/security/cacerts")
-        
-        if not os.path.exists(cacerts):
+
+        cacerts = self.find_java_cacerts(java_home)
+        if not cacerts:
             self.print_error("Could not find Java cacerts file")
             return
         
@@ -1146,7 +1223,27 @@ class FuwarpPython:
                 self.print_info("Certificate added to Java keystore successfully")
             else:
                 self.print_warn("Failed to add certificate to Java keystore (may require sudo)")
-    
+
+    def setup_gradle_cert(self):
+        """Setup Gradle certificate configuration."""
+        gradle_props = self.get_gradle_properties_path()
+
+        if not self.command_exists('gradle') and not os.path.exists(gradle_props):
+            return
+
+        cacerts = self.find_java_cacerts()
+        if not cacerts:
+            self.print_error("Could not find Java cacerts file for Gradle")
+            return
+
+        props_to_set = {
+            'systemProp.javax.net.ssl.trustStore': cacerts,
+            'systemProp.javax.net.ssl.trustStorePassword': 'changeit',
+            'systemProp.https.protocols': 'TLSv1.2'
+        }
+
+        self.update_properties_file(gradle_props, props_to_set, "Gradle properties")
+
     def setup_dbeaver_cert(self):
         """Setup DBeaver certificate."""
         dbeaver_keytool = "/Applications/DBeaver.app/Contents/Eclipse/jre/Contents/Home/bin/keytool"
@@ -1780,6 +1877,34 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
                 has_issues = True
         else:
             self.print_info("  - Java not installed (would configure if present)")
+        return has_issues
+
+    def check_gradle_status(self, temp_warp_cert):
+        """Check Gradle configuration status."""
+        has_issues = False
+        gradle_props = self.get_gradle_properties_path()
+        if self.command_exists('gradle') or os.path.exists(gradle_props):
+            if os.path.exists(gradle_props):
+                current_props = self.read_properties_file(gradle_props)
+                cacerts = self.find_java_cacerts()
+                expected = {
+                    'systemProp.javax.net.ssl.trustStore': cacerts,
+                    'systemProp.javax.net.ssl.trustStorePassword': 'changeit',
+                    'systemProp.https.protocols': 'TLSv1.2'
+                }
+
+                for key, value in expected.items():
+                    current = current_props.get(key, '')
+                    if current == value and current:
+                        self.print_info(f"  ✓ {key} set correctly in Gradle properties")
+                    else:
+                        self.print_warn(f"  ✗ {key} not set correctly in Gradle properties")
+                        has_issues = True
+            else:
+                self.print_warn("  ✗ Gradle properties file not found")
+                has_issues = True
+        else:
+            self.print_info("  - Gradle not installed (would configure if present)")
         return has_issues
 
     def check_dbeaver_status(self, temp_warp_cert):
