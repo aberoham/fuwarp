@@ -20,11 +20,9 @@ chmod +x ./fuwarp.py
 ```
 ## FU Warp Rational
 
-When your organization runs Cloudflare WARP Gateway with TLS inspection enabled, the gateway intercepts and records virtually all HTTPS traffic for policy enforcement and security auditing. 
-WARP's Gateway achieves this introspection by presenting its own root certificate to your TLS clients -- essentially performing a sanctioned man-in-the-middle (MITM) attack on your TLS (aka SSL) connections.
+When your organization runs Cloudflare WARP Gateway with TLS inspection enabled, the gateway intercepts and records virtually all HTTPS traffic for policy enforcement and security auditing. WARP's Gateway achieves this introspection by presenting its own root certificate to your TLS clients -- essentially performing a sanctioned man-in-the-middle (MITM) attack on your TLS (aka SSL) connections.
 
-Typically, MacOS and Windows themselves will automatically trust WARP's certificate through system keychains. Most third-party development tools completely ignore these system certificates.
-Each tool maintains its own certificate bundle or looks for specific environment variables. This fragmentation creates endless annoying "certificate verify failed" errors across your toolchain whenever Warp Gateway's inspection is turned on.
+Typically, MacOS and Windows themselves will automatically trust WARP's certificate through system keychains. Most third-party development tools completely ignore these system certificates. Each tool maintains its own certificate bundle or looks for specific environment variables. This fragmentation creates endless annoying "certificate verify failed" errors across your toolchain whenever Warp Gateway's inspection is turned on.
 
 One particularly annoying detail is that simply pointing tools to your organization's WARP Gateway certificate by itself rarely works. You often need to append the custom WARP CA to an existing bundle of public CAs, which quickly becomes a brittle process that needs repeating for each tool. 
 
@@ -40,7 +38,7 @@ The act of toggling Warp off also seriously hints that you have no clue what you
 
 - Cloudflare WARP must be installed and connected
 - `warp-cli` command must be available
-- Python 3 (macOS)
+- Python 3 (macOS, Windows/WSL)
 
 ## Contribute
 
@@ -57,4 +55,8 @@ Something amiss or not quite right? Please post the full output of a run to an i
 - Podman: installs certificate in Podman VM's trust store.
 - Rancher Desktop: installs certificate in Rancher VM's trust store.
 - Android Emulator: helps install certificate on running Android emulators.
+
+### VS Code Devcontainers / WSL
+
+Fuwarp should auto-detect VS Code devcontainers and WSL environments where `warp-cli` is only available on the underlying host. Within these environments, fuwarp will guide the user where to obtain their Cloudflare cert and will skip slow verification tests.
 

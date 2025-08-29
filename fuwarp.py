@@ -135,12 +135,15 @@ SHELL_MODIFIED = False
 CERT_FINGERPRINT = ""  # Cache for certificate fingerprint
 
 class FuwarpPython:
-    def __init__(self, mode='status', debug=False, selected_tools=None):
+    def __init__(self, mode='status', debug=False, selected_tools=None, cert_file=None, manual_cert=False, skip_verify=False):
         self.mode = mode
         self.debug = debug
         self.shell_modified = False
         self.cert_fingerprint = ""
         self.selected_tools = selected_tools or []
+        self.cert_file = cert_file
+        self.manual_cert = manual_cert
+        self.skip_verify = skip_verify
         
         # Define tool registry with tags and descriptions
         self.tools_registry = {
@@ -553,30 +556,200 @@ class FuwarpPython:
             self.shell_modified = True
             self.print_info(f"Added {var_name} to {shell_config}")
     
+    def is_devcontainer(self):
+        """Check if running inside a VS Code devcontainer."""
+        # Check for devcontainer environment variables
+        if os.environ.get('REMOTE_CONTAINERS') or os.environ.get('CODESPACES'):
+            return True
+        
+        # Check for .dockerenv file (Docker container indicator)
+        if os.path.exists('/.dockerenv'):
+            return True
+        
+        # Check for container environment in cgroup
+        try:
+            with open('/proc/1/cgroup', 'r') as f:
+                cgroup = f.read()
+                if 'docker' in cgroup or 'containerd' in cgroup:
+                    return True
+        except:
+            pass
+        
+        # Check for WSL
+        try:
+            with open('/proc/version', 'r') as f:
+                version = f.read().lower()
+                if 'microsoft' in version or 'wsl' in version:
+                    # In WSL, check if warp-cli exists on Windows side
+                    warp_cli_win = shutil.which('warp-cli.exe')
+                    if not warp_cli_win and not self.command_exists('warp-cli'):
+                        return True
+        except:
+            pass
+        
+        return False
+    
+    def get_certificate_from_user(self):
+        """Prompt user to manually provide the certificate."""
+        print()
+        self.print_info("=" * 70)
+        self.print_info("Devcontainer Detected - Manual Certificate Setup")
+        self.print_info("=" * 70)
+        print()
+        self.print_info("You're running fuwarp inside a devcontainer where warp-cli isn't available.")
+        self.print_info("The WARP certificate needs to be obtained from your Windows host machine.")
+        print()
+        self.print_info("QUICKEST METHOD:")
+        self.print_info(f"1. On your Windows host, open PowerShell/Terminal and run:")
+        self.print_info(f"   {BLUE}warp-cli certs --no-paginate{NC}")
+        self.print_info(f"2. Copy the entire output (including BEGIN/END lines)")
+        self.print_info(f"3. Come back here and paste it")
+        print()
+        self.print_info("ALTERNATIVE METHOD:")
+        self.print_info(f"1. Save the certificate to a file accessible from this container")
+        self.print_info(f"2. Run: ./fuwarp.py --fix --cert-file /path/to/cert.pem")
+        print()
+        
+        choice = input("Ready to paste? Press ENTER to continue, 'F' for file path, or 'Q' to quit: ").strip().upper()
+        
+        if choice == 'Q':
+            return None
+        elif choice == 'F':
+            file_path = input("Enter the path to the certificate file: ").strip()
+            if not file_path:
+                self.print_error("No file path provided")
+                return None
+            
+            # Expand user path
+            file_path = os.path.expanduser(file_path)
+            
+            if not os.path.exists(file_path):
+                self.print_error(f"File not found: {file_path}")
+                return None
+            
+            try:
+                with open(file_path, 'r') as f:
+                    cert_content = f.read()
+                self.print_info(f"Certificate loaded from {file_path}")
+            except Exception as e:
+                self.print_error(f"Error reading file: {e}")
+                return None
+        else:
+            # Default to paste mode - make it easier
+            print()
+            self.print_info("Paste the certificate now (Ctrl+V or right-click paste)")
+            self.print_info("Then press Enter twice when done:")
+            print()
+            
+            lines = []
+            while True:
+                try:
+                    line = input()
+                    if not line and lines and lines[-1] == "":
+                        break
+                    lines.append(line)
+                except EOFError:
+                    break
+            
+            cert_content = '\n'.join(lines[:-1] if lines and lines[-1] == "" else lines)
+        
+        # Validate the certificate format
+        if not cert_content.strip():
+            self.print_error("No certificate provided")
+            return None
+        
+        if "-----BEGIN CERTIFICATE-----" not in cert_content:
+            self.print_error("Invalid certificate format: missing BEGIN CERTIFICATE marker")
+            return None
+        
+        if "-----END CERTIFICATE-----" not in cert_content:
+            self.print_error("Invalid certificate format: missing END CERTIFICATE marker")
+            return None
+        
+        # Ensure proper formatting
+        cert_lines = cert_content.strip().split('\n')
+        formatted_cert = '\n'.join(cert_lines) + '\n'
+        
+        return formatted_cert
+    
     def download_certificate(self):
         """Download and verify certificate."""
         self.print_info("Retrieving Cloudflare WARP certificate...")
         
-        # Check if warp-cli is available
-        if not self.command_exists('warp-cli'):
-            self.print_error("warp-cli command not found. Please ensure Cloudflare WARP is installed.")
-            return False
+        warp_cert = None
         
-        # Get current certificate from warp-cli
-        try:
-            result = subprocess.run(
-                ['warp-cli', 'certs', '--no-paginate'],
-                capture_output=True, text=True
-            )
-            
-            if result.returncode != 0 or not result.stdout.strip():
-                self.print_error("Failed to get certificate from warp-cli")
-                self.print_error("Make sure you are connected to Cloudflare WARP")
+        # Priority 1: Use certificate file if provided via command line
+        if self.cert_file:
+            cert_file_path = os.path.expanduser(self.cert_file)
+            if not os.path.exists(cert_file_path):
+                self.print_error(f"Certificate file not found: {cert_file_path}")
                 return False
             
-            warp_cert = result.stdout.strip()
-        except Exception as e:
-            self.print_error(f"Error running warp-cli: {e}")
+            try:
+                with open(cert_file_path, 'r') as f:
+                    warp_cert = f.read()
+                self.print_info(f"Using certificate from file: {cert_file_path}")
+            except Exception as e:
+                self.print_error(f"Error reading certificate file: {e}")
+                return False
+        
+        # Priority 2: Force manual input if requested
+        elif self.manual_cert:
+            self.print_info("Manual certificate mode enabled")
+            warp_cert = self.get_certificate_from_user()
+            if not warp_cert:
+                return False
+        
+        # Priority 3: Auto-detect devcontainer/WSL without warp-cli
+        elif self.is_devcontainer() and not self.command_exists('warp-cli'):
+            # Check if certificate already exists
+            if os.path.exists(CERT_PATH):
+                self.print_info(f"Found existing certificate at {CERT_PATH}")
+                # In install mode, ask if they want to update it
+                if self.is_install_mode():
+                    response = input("Do you want to update it with a new certificate? (y/N) ")
+                    if response.lower() == 'y':
+                        warp_cert = self.get_certificate_from_user()
+                        if not warp_cert:
+                            return False
+                    else:
+                        with open(CERT_PATH, 'r') as f:
+                            warp_cert = f.read()
+                        self.print_info("Using existing certificate")
+                else:
+                    # In status mode, just use existing
+                    with open(CERT_PATH, 'r') as f:
+                        warp_cert = f.read()
+                    self.print_info("Using existing certificate for status check")
+            else:
+                # No existing cert - must get from user
+                warp_cert = self.get_certificate_from_user()
+                if not warp_cert:
+                    self.print_error("Cannot proceed without a certificate in devcontainer environment")
+                    self.print_info("Tip: Run './fuwarp.py --fix' to set up the certificate")
+                    return False
+        
+        # Priority 4: Standard path - use warp-cli if available
+        elif self.command_exists('warp-cli'):
+            # Get current certificate from warp-cli
+            try:
+                result = subprocess.run(
+                    ['warp-cli', 'certs', '--no-paginate'],
+                    capture_output=True, text=True
+                )
+                
+                if result.returncode != 0 or not result.stdout.strip():
+                    self.print_error("Failed to get certificate from warp-cli")
+                    self.print_error("Make sure you are connected to Cloudflare WARP")
+                    return False
+                
+                warp_cert = result.stdout.strip()
+            except Exception as e:
+                self.print_error(f"Error running warp-cli: {e}")
+                return False
+        else:
+            self.print_error("warp-cli command not found and not in a detected container environment.")
+            self.print_error("Please ensure Cloudflare WARP is installed.")
             return False
         
         # Create a temp file for the WARP certificate
@@ -1067,14 +1240,18 @@ class FuwarpPython:
             # Configure gcloud
             result = subprocess.run(
                 ['gcloud', 'config', 'set', 'core/custom_ca_certs_file', gcloud_bundle],
-                capture_output=True
+                capture_output=True,
+                timeout=30  # Add timeout to prevent hanging
             )
             if result.returncode == 0:
                 self.print_info("gcloud configured successfully")
-                # Only run diagnostics in real mode when we actually changed settings
-                if needs_setup:
+                # Skip diagnostics in devcontainers as they can hang
+                if needs_setup and not self.is_devcontainer():
                     self.print_info("Running gcloud diagnostics...")
-                    subprocess.run(['gcloud', 'info', '--run-diagnostics'])
+                    try:
+                        subprocess.run(['gcloud', 'info', '--run-diagnostics'], timeout=10)
+                    except subprocess.TimeoutExpired:
+                        self.print_warn("gcloud diagnostics timed out, skipping")
             else:
                 self.print_error("Failed to configure gcloud")
     
@@ -1465,6 +1642,16 @@ class FuwarpPython:
     
     def verify_connection(self, tool_name):
         """Verify if a tool can connect through WARP."""
+        # Skip verification if requested or in devcontainer
+        if self.skip_verify:
+            self.print_debug(f"Skipping {tool_name} verification (--skip-verify flag)")
+            return "SKIPPED"
+        
+        # Skip verification in devcontainers as network doesn't go through WARP
+        if self.is_devcontainer():
+            self.print_debug(f"Skipping {tool_name} verification in devcontainer environment")
+            return "SKIPPED"
+        
         test_url = "https://www.cloudflare.com"
         result = "UNKNOWN"
         
@@ -2151,8 +2338,17 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
                     self.print_debug("Status mode: Using fast certificate checks")
                 else:
                     self.print_debug("Install mode: Using thorough certificate checks")
-                if self.selected_tools:
-                    self.print_debug(f"Selected tools: {', '.join(self.selected_tools)}")
+            
+            # Auto-detect devcontainer and adjust behavior
+            if self.is_devcontainer():
+                if not self.skip_verify:
+                    self.skip_verify = True
+                print()
+                self.print_info("Detected: Running inside a devcontainer/WSL")
+                if not self.command_exists('warp-cli'):
+                    self.print_info("   warp-cli is not available in this container")
+                    self.print_info("   Certificate must be obtained from your Windows host")
+                self.print_info("   Network verification tests will be skipped")
                 print()
             
             # Validate selected tools
@@ -2247,6 +2443,12 @@ def main():
                              'Examples: --tools node --tools python or --tools node-npm,gcloud')
     parser.add_argument('--list-tools', action='store_true',
                         help='List all available tools and their tags')
+    parser.add_argument('--cert-file', metavar='PATH',
+                        help='Path to certificate file (useful for devcontainers where warp-cli is unavailable)')
+    parser.add_argument('--manual-cert', action='store_true',
+                        help='Force manual certificate input mode (for devcontainers)')
+    parser.add_argument('--skip-verify', action='store_true',
+                        help='Skip network verification tests (useful in devcontainers)')
     parser.add_argument('--debug', '--verbose', action='store_true',
                         help='Show detailed debug information')
     parser.add_argument('--version', action='version',
@@ -2276,7 +2478,14 @@ def main():
     mode = 'install' if args.fix else 'status'
     
     # Create and run fuwarp instance
-    fuwarp = FuwarpPython(mode=mode, debug=args.debug, selected_tools=selected_tools)
+    fuwarp = FuwarpPython(
+        mode=mode, 
+        debug=args.debug, 
+        selected_tools=selected_tools,
+        cert_file=args.cert_file,
+        manual_cert=args.manual_cert,
+        skip_verify=args.skip_verify
+    )
     exit_code = fuwarp.main()
     sys.exit(exit_code)
 
