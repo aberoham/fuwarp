@@ -50,6 +50,7 @@ Something amiss or not quite right? Please post the full output of a run to an i
 - Python: sets the `REQUESTS_CA_BUNDLE`, `SSL_CERT_FILE`, and `CURL_CA_BUNDLE` environment variables.
 - gcloud: configures the `core/custom_ca_certs_file` for the Google Cloud `gcloud` CLI.
 - Java/JVM: adds the Cloudflare certificate to any found Java keystore (cacerts).
+ - Gradle: sets `systemProp` entries in `gradle.properties` (respecting `GRADLE_USER_HOME`) for the WARP certificate.
 - DBeaver: targets the bundled JRE and adds the certificate to its keystore.
 - wget: configures the `ca_certificate` in the `.wgetrc` file.
 - Podman: installs certificate in Podman VM's trust store.
