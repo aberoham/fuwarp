@@ -181,12 +181,19 @@ class FuwarpWindows:
                 "check_func": self.check_wget_status,
                 "description": "wget download utility",
             },
-            "docker": {
-                "name": "Docker Desktop",
-                "tags": ["docker", "docker-desktop", "container"],
-                "setup_func": self.setup_docker_cert,
-                "check_func": self.check_docker_status,
-                "description": "Docker Desktop for Windows",
+            "podman": {
+                "name": "Podman",
+                "tags": ["podman", "container", "docker-alternative"],
+                "setup_func": self.setup_podman_cert,
+                "check_func": self.check_podman_status,
+                "description": "Podman container runtime",
+            },
+            "rancher": {
+                "name": "Rancher Desktop",
+                "tags": ["rancher", "rancher-desktop", "kubernetes", "k8s"],
+                "setup_func": self.setup_rancher_cert,
+                "check_func": self.check_rancher_status,
+                "description": "Rancher Desktop Kubernetes",
             },
             "git": {
                 "name": "Git",
@@ -664,7 +671,10 @@ class FuwarpWindows:
         # Get current certificate from warp-cli
         try:
             result = subprocess.run(
-                ["warp-cli", "certs", "--no-paginate"], capture_output=True, text=True
+                ["warp-cli", "certs", "--no-paginate"],
+                capture_output=True,
+                text=True,
+                shell=True,
             )
 
             if result.returncode != 0 or not result.stdout.strip():
@@ -1128,7 +1138,7 @@ class FuwarpWindows:
             try:
                 # Try to find Java installation
                 result = subprocess.run(
-                    ["where", "java"], capture_output=True, text=True
+                    ["where", "java"], capture_output=True, text=True, shell=True
                 )
                 if result.returncode == 0:
                     java_path = result.stdout.strip().split("\n")[0]
@@ -1274,34 +1284,115 @@ class FuwarpWindows:
                 f.write(f"\n{config_line}\n")
             self.print_info("Added ca_certificate to wget configuration")
 
-    def setup_docker_cert(self):
-        """Setup Docker Desktop certificate."""
-        if not self.command_exists("docker"):
+    def setup_podman_cert(self):
+        """Setup Podman certificate."""
+        if not self.command_exists("podman"):
             return
 
-        self.print_info("Setting up Docker Desktop certificate...")
+        self.print_info("Setting up Podman certificate...")
 
-        # Docker Desktop for Windows uses the Windows certificate store
-        # So installing to the system store should be sufficient
-        if self.check_certificate_in_store(CERT_PATH, "Root"):
-            self.print_info(
-                "Certificate already in Windows certificate store - Docker should trust it"
+        # Check if podman machine exists
+        try:
+            result = subprocess.run(
+                ["podman", "machine", "list"],
+                capture_output=True,
+                text=True,
+                shell=True,
             )
-        else:
-            if not self.is_install_mode():
-                self.print_action(
-                    "Would install certificate to Windows certificate store for Docker"
-                )
-            else:
+            if "Currently running" not in result.stdout:
+                self.print_warn("No Podman machine is currently running")
                 self.print_info(
-                    "Installing certificate to Windows certificate store for Docker..."
+                    "Please start a Podman machine first with: podman machine start"
                 )
-                if self.install_certificate_to_store(CERT_PATH, "Root"):
-                    self.print_info(
-                        "Certificate installed - Docker Desktop should now trust it"
-                    )
+                return
+        except:
+            return
+
+        if not self.is_install_mode():
+            self.print_action("Would copy certificate to Podman VM")
+            self.print_action(
+                f"Would run: podman machine ssh 'sudo tee /etc/pki/ca-trust/source/anchors/cloudflare-warp.pem' < {CERT_PATH}"
+            )
+            self.print_action("Would run: podman machine ssh 'sudo update-ca-trust'")
+        else:
+            self.print_info("Copying certificate to Podman VM...")
+
+            # Copy certificate into Podman VM
+            with open(CERT_PATH, "r") as f:
+                cert_content = f.read()
+
+            result = subprocess.run(
+                [
+                    "podman",
+                    "machine",
+                    "ssh",
+                    "sudo tee /etc/pki/ca-trust/source/anchors/cloudflare-warp.pem",
+                ],
+                input=cert_content,
+                text=True,
+                capture_output=True,
+                shell=True,
+            )
+
+            if result.returncode == 0:
+                # Update CA trust
+                result = subprocess.run(
+                    ["podman", "machine", "ssh", "sudo update-ca-trust"],
+                    capture_output=True,
+                    shell=True,
+                )
+                if result.returncode == 0:
+                    self.print_info("Podman certificate installed successfully")
                 else:
-                    self.print_error("Failed to install certificate to Windows store")
+                    self.print_error("Failed to update CA trust in Podman VM")
+            else:
+                self.print_error("Failed to copy certificate to Podman VM")
+
+    def setup_rancher_cert(self):
+        """Setup Rancher certificate."""
+        if not self.command_exists("rdctl"):
+            return
+
+        self.print_info("Setting up Rancher certificate...")
+
+        if not self.is_install_mode():
+            self.print_action("Would copy certificate to Rancher VM")
+            self.print_action(
+                f"Would run: rdctl shell sudo tee /usr/local/share/ca-certificates/cloudflare-warp.pem < {CERT_PATH}"
+            )
+            self.print_action("Would run: rdctl shell sudo update-ca-certificates")
+        else:
+            self.print_info("Copying certificate to Rancher VM...")
+
+            # Copy certificate into Rancher VM
+            with open(CERT_PATH, "r") as f:
+                cert_content = f.read()
+
+            result = subprocess.run(
+                [
+                    "rdctl",
+                    "shell",
+                    "sudo tee /usr/local/share/ca-certificates/cloudflare-warp.pem",
+                ],
+                input=cert_content,
+                text=True,
+                capture_output=True,
+                shell=True,
+            )
+
+            if result.returncode == 0:
+                # Update CA certificates
+                result = subprocess.run(
+                    ["rdctl", "shell", "sudo update-ca-certificates"],
+                    capture_output=True,
+                    shell=True,
+                )
+                if result.returncode == 0:
+                    self.print_info("Rancher certificate installed successfully")
+                else:
+                    self.print_error("Failed to update CA certificates in Rancher VM")
+            else:
+                self.print_error("Failed to copy certificate to Rancher VM")
 
     def setup_git_cert(self):
         """Setup Git certificate."""
@@ -1410,7 +1501,10 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
 
                 try:
                     proc_result = subprocess.run(
-                        ["node", "-e", node_script], capture_output=True, text=True
+                        ["node", "-e", node_script],
+                        capture_output=True,
+                        text=True,
+                        shell=True,
                     )
 
                     if proc_result.returncode == 0:
@@ -1492,10 +1586,13 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
                             ["curl", "-v", "-s", "-o", "nul", test_url],
                             capture_output=True,
                             text=True,
+                            shell=True,
                         )
                     else:
                         curl_result = subprocess.run(
-                            ["curl", "-s", "-o", "nul", test_url], capture_output=True
+                            ["curl", "-s", "-o", "nul", test_url],
+                            capture_output=True,
+                            shell=True,
                         )
 
                     if curl_result.returncode == 0:
@@ -1795,22 +1892,82 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
             self.print_info("  - wget not installed")
         return has_issues
 
-    def check_docker_status(self, temp_warp_cert):
-        """Check Docker Desktop configuration status."""
+    def check_podman_status(self, temp_warp_cert):
+        """Check Podman configuration status."""
         has_issues = False
-        if self.command_exists("docker"):
-            # Docker Desktop uses Windows certificate store
-            if self.check_certificate_in_store(temp_warp_cert, "Root"):
-                self.print_info(
-                    "  ✓ Docker Desktop should trust certificate (in Windows store)"
+        if self.command_exists("podman"):
+            try:
+                result = subprocess.run(
+                    ["podman", "machine", "list"],
+                    capture_output=True,
+                    text=True,
+                    shell=True,
                 )
-            else:
-                self.print_warn(
-                    "  ✗ Certificate not in Windows store - Docker may not trust it"
-                )
-                has_issues = True
+                if "Currently running" in result.stdout:
+                    # Check if certificate exists in Podman VM
+                    result = subprocess.run(
+                        [
+                            "podman",
+                            "machine",
+                            "ssh",
+                            "test -f /etc/pki/ca-trust/source/anchors/cloudflare-warp.pem",
+                        ],
+                        capture_output=True,
+                        shell=True,
+                    )
+                    if result.returncode == 0:
+                        self.print_info(
+                            "  ✓ Podman VM has Cloudflare certificate installed"
+                        )
+                    else:
+                        self.print_warn("  ✗ Podman VM missing Cloudflare certificate")
+                        has_issues = True
+                else:
+                    self.print_info("  - Podman installed but no machine is running")
+                    self.print_info("    Start a machine with: podman machine start")
+            except:
+                self.print_info("  - Failed to check Podman status")
         else:
-            self.print_info("  - Docker not installed")
+            self.print_info("  - Podman not installed (would configure VM if present)")
+        return has_issues
+
+    def check_rancher_status(self, temp_warp_cert):
+        """Check Rancher Desktop configuration status."""
+        has_issues = False
+        if self.command_exists("rdctl"):
+            try:
+                # Try to check if Rancher is running
+                result = subprocess.run(
+                    ["rdctl", "version"], capture_output=True, text=True, shell=True
+                )
+                if "rdctl" in result.stdout:
+                    # Check if certificate exists in Rancher VM
+                    result = subprocess.run(
+                        [
+                            "rdctl",
+                            "shell",
+                            "test -f /usr/local/share/ca-certificates/cloudflare-warp.pem",
+                        ],
+                        capture_output=True,
+                        shell=True,
+                    )
+                    if result.returncode == 0:
+                        self.print_info(
+                            "  ✓ Rancher Desktop VM has Cloudflare certificate installed"
+                        )
+                    else:
+                        self.print_warn(
+                            "  ✗ Rancher Desktop VM missing Cloudflare certificate"
+                        )
+                        has_issues = True
+                else:
+                    self.print_info("  - Rancher Desktop installed but not running")
+            except:
+                self.print_info("  - Rancher Desktop installed but not running")
+        else:
+            self.print_info(
+                "  - Rancher Desktop not installed (would configure if present)"
+            )
         return has_issues
 
     def check_git_status(self, temp_warp_cert):
@@ -1867,6 +2024,7 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
                     ["warp-cli", "certs", "--no-paginate"],
                     capture_output=True,
                     text=True,
+                    shell=True,
                 )
                 if result.returncode == 0 and result.stdout.strip():
                     with tempfile.NamedTemporaryFile(
@@ -1898,7 +2056,7 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
         if self.command_exists("warp-cli"):
             try:
                 result = subprocess.run(
-                    ["warp-cli", "status"], capture_output=True, text=True
+                    ["warp-cli", "status"], capture_output=True, text=True, shell=True
                 )
                 warp_status = result.stdout if result.returncode == 0 else "unknown"
                 if "Connected" in warp_status:
@@ -2249,7 +2407,9 @@ def main():
             tags_str = ", ".join(tool_info["tags"])
             print(f"  {tool_key:<10} - {tool_info['name']:<25} Tags: {tags_str}")
         print("\nExamples: python fuwarp-windows.py --fix --tools node,python")
-        print("          python fuwarp-windows.py --fix --tools node-npm --tools gcp")
+        print(
+            "          python fuwarp-windows.py --fix --tools node-npm --tools podman"
+        )
         sys.exit(0)
 
     # Process --tools argument

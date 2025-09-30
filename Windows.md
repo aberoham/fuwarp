@@ -81,12 +81,13 @@ Something amiss or not quite right? Please post the full output of a run to an i
 ## List of supported fixes (Windows)
 
 - **Node.js/npm**: configures `NODE_EXTRA_CA_CERTS` for Node.js and the cafile setting for npm
-- **Python**: sets the `REQUESTS_CA_BUNDLE`, `SSL_CERT_FILE`, and `CURL_CA_BUNDLE` environment variables
+- **Python**: sets the `REQUESTS_CA_BUNDLE`, `SSL_CERT_FILE`, and `CURL_CA_BUNDLE` environment variables  
 - **Google Cloud SDK (gcloud)**: configures the `core/custom_ca_certs_file` for the Google Cloud `gcloud` CLI
 - **Java/JVM**: adds the Cloudflare certificate to any found Java keystore (cacerts)
 - **wget**: configures the `ca_certificate` in the `.wgetrc` file
-- **Docker Desktop**: installs certificate in Docker Desktop's certificate store
-- **Git**: configures Git to use the custom certificate bundle
+- **Podman**: installs certificate in Podman container runtime
+- **Rancher Desktop**: installs certificate in Rancher Desktop Kubernetes environment
+- **Git**: configures Git to use the custom certificate bundle via `http.sslCAInfo`
 - **Windows Certificate Store**: installs the certificate in the Windows system certificate store
 
 ### WSL Support
