@@ -888,6 +888,9 @@ class FuwarpWindows:
                         with open(CERT_PATH, "r") as cf:
                             cert_content = cf.read()
                         with open(node_extra_ca_certs, "a") as f:
+                            # Ensure there's a newline before the certificate
+                            if not cert_content.startswith("\n"):
+                                f.write("\n")
                             f.write(cert_content)
             else:
                 self.print_warn(
@@ -954,6 +957,9 @@ class FuwarpWindows:
                             with open(CERT_PATH, "r") as cf:
                                 cert_content = cf.read()
                             with open(current_cafile, "a") as f:
+                                # Ensure there's a newline before the certificate
+                                if not cert_content.startswith("\n"):
+                                    f.write("\n")
                                 f.write(cert_content)
             else:
                 self.print_warn(
@@ -982,6 +988,9 @@ class FuwarpWindows:
                     with open(CERT_PATH, "r") as cf:
                         cert_content = cf.read()
                     with open(npm_bundle, "a") as f:
+                        # Ensure there's a newline before the certificate
+                        if not cert_content.startswith("\n"):
+                            f.write("\n")
                         f.write(cert_content)
 
                     try:
@@ -1023,6 +1032,9 @@ class FuwarpWindows:
                     with open(CERT_PATH, "r") as cf:
                         cert_content = cf.read()
                     with open(requests_ca_bundle, "a") as f:
+                        # Ensure there's a newline before the certificate
+                        if not cert_content.startswith("\n"):
+                            f.write("\n")
                         f.write(cert_content)
         else:
             if not self.is_install_mode():
@@ -1045,6 +1057,9 @@ class FuwarpWindows:
                 with open(CERT_PATH, "r") as cf:
                     cert_content = cf.read()
                 with open(python_bundle, "a") as f:
+                    # Ensure there's a newline before the certificate
+                    if not cert_content.startswith("\n"):
+                        f.write("\n")
                     f.write(cert_content)
 
             self.set_environment_variable("REQUESTS_CA_BUNDLE", python_bundle)
@@ -1114,6 +1129,9 @@ class FuwarpWindows:
             with open(CERT_PATH, "r") as cf:
                 cert_content = cf.read()
             with open(gcloud_bundle, "a") as f:
+                # Ensure there's a newline before the certificate
+                if not cert_content.startswith("\n"):
+                    f.write("\n")
                 f.write(cert_content)
 
             # Configure gcloud
@@ -1427,6 +1445,9 @@ class FuwarpWindows:
                             with open(CERT_PATH, "r") as cf:
                                 cert_content = cf.read()
                             with open(current_ca_info, "a") as f:
+                                # Ensure there's a newline before the certificate
+                                if not cert_content.startswith("\n"):
+                                    f.write("\n")
                                 f.write(cert_content)
                             self.print_info(
                                 f"Appended certificate to {current_ca_info}"
@@ -1459,6 +1480,9 @@ class FuwarpWindows:
                 with open(CERT_PATH, "r") as cf:
                     cert_content = cf.read()
                 with open(git_bundle, "a") as f:
+                    # Ensure there's a newline before the certificate
+                    if not cert_content.startswith("\n"):
+                        f.write("\n")
                     f.write(cert_content)
 
                 # Configure git
