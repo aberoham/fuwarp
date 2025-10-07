@@ -126,23 +126,25 @@ BLUE = "\033[0;34m"
 NC = "\033[0m"  # No Color
 
 # Certificate details
-CERT_PATH = os.path.expanduser("~/.cloudflare-ca.pem")
-# Alternative certificate file names to check
-ALT_CERT_NAMES = [
-    "thehutgroup.pem",
-    "thehutgroup.crt",
-]
+# Base directory for tool-specific certificate bundles
+CLOUDFLARE_WARP_DIR = os.path.expanduser("~/.cloudflare-warp")
+CERT_PATH = os.path.join(CLOUDFLARE_WARP_DIR, "THG-CloudflareCert.pem")
+# No alternative certificate file names - we generate our own specific cert
+ALT_CERT_NAMES = []
 SHELL_MODIFIED = False
 CERT_FINGERPRINT = ""  # Cache for certificate fingerprint
 
 
 class FuwarpWindows:
-    def __init__(self, mode="status", debug=False, selected_tools=None):
+    def __init__(
+        self, mode="status", debug=False, selected_tools=None, use_warp_cli=False
+    ):
         self.mode = mode
         self.debug = debug
         self.shell_modified = False
         self.cert_fingerprint = ""
         self.selected_tools = selected_tools or []
+        self.use_warp_cli = use_warp_cli
 
         # Define tool registry with tags and descriptions
         self.tools_registry = {
@@ -331,20 +333,14 @@ class FuwarpWindows:
             return False
 
     def find_certificate_file(self):
-        """Find the certificate file from multiple possible locations."""
-        # Check default location first
+        """Find the THG-CloudflareCert.pem certificate file."""
+        # Only use our specific certificate file
         if os.path.exists(CERT_PATH):
+            self.print_debug(f"Found THG Cloudflare certificate at: {CERT_PATH}")
             return CERT_PATH
 
-        # Check alternative names in user directory
-        user_dir = os.path.expanduser("~")
-        for cert_name in ALT_CERT_NAMES:
-            cert_path = os.path.join(user_dir, cert_name)
-            if os.path.exists(cert_path):
-                self.print_debug(f"Found certificate at: {cert_path}")
-                return cert_path
-
-        return CERT_PATH  # Return default even if not found
+        self.print_debug(f"THG Cloudflare certificate not found at: {CERT_PATH}")
+        return CERT_PATH  # Return path even if not found for creation
 
     def get_cert_fingerprint(self, cert_path=None):
         """Get certificate fingerprint (cached)."""
@@ -411,6 +407,108 @@ class FuwarpWindows:
 
         return ""
 
+    def get_tool_bundle_path(self, tool_name):
+        """Get the standardized bundle path for a tool."""
+        return os.path.join(CLOUDFLARE_WARP_DIR, tool_name, "ca-bundle.pem")
+
+    def find_existing_bundle(self, tool_name):
+        """Find existing certificate bundle for a tool in various locations."""
+        # Tool-specific locations to check
+        locations = {
+            "python": [
+                os.path.expanduser("~/.python-ca-bundle.pem"),
+                self.get_environment_variable("REQUESTS_CA_BUNDLE"),
+                self.get_environment_variable("SSL_CERT_FILE"),
+            ],
+            "node": [
+                os.environ.get("NODE_EXTRA_CA_CERTS", ""),
+            ],
+            "npm": [],  # npm config get cafile will be checked separately
+            "gcloud": [],  # gcloud config will be checked separately
+            "git": [],  # git config will be checked separately
+        }
+
+        # Check tool-specific locations
+        for location in locations.get(tool_name, []):
+            if location and os.path.exists(location):
+                return location
+
+        return None
+
+    def setup_consistent_bundle(self, tool_name, env_vars=None):
+        """Setup consistent certificate bundle for a tool."""
+        bundle_path = self.get_tool_bundle_path(tool_name)
+        existing_bundle = self.find_existing_bundle(tool_name)
+
+        # Check if bundle already exists and is current
+        if os.path.exists(bundle_path):
+            if self.certificate_exists_in_file(CERT_PATH, bundle_path):
+                self.print_debug(
+                    f"{tool_name} bundle already contains current certificate"
+                )
+                return bundle_path
+
+        # Handle existing bundle
+        if existing_bundle:
+            if not self.is_install_mode():
+                self.print_action(
+                    f"Found existing {tool_name} certificate bundle at {existing_bundle}"
+                )
+                self.print_action(
+                    f"Would copy to {bundle_path} and append Cloudflare cert"
+                )
+            else:
+                response = input(
+                    f"Found existing {tool_name} certificate bundle at {existing_bundle}. Copy to {bundle_path} and append Cloudflare cert? (Y/n) "
+                )
+                if response.lower() != "n":
+                    # Create directory
+                    os.makedirs(os.path.dirname(bundle_path), exist_ok=True)
+
+                    # Copy existing bundle
+                    shutil.copy(existing_bundle, bundle_path)
+                    self.print_info(f"Copied existing bundle to {bundle_path}")
+
+                    # Check if the copied bundle already contains the certificate
+                    if not self.certificate_exists_in_file(CERT_PATH, bundle_path):
+                        # Append Cloudflare cert if not already present
+                        self.append_certificate_if_missing(CERT_PATH, bundle_path)
+                    else:
+                        self.print_debug(
+                            f"Copied bundle already contains current certificate, skipping append"
+                        )
+                else:
+                    return None
+        else:
+            # No existing bundle, create new one
+            if not self.is_install_mode():
+                self.print_action(f"Would create new bundle at {bundle_path}")
+            else:
+                self.print_info(f"Creating new {tool_name} CA bundle at {bundle_path}")
+                os.makedirs(os.path.dirname(bundle_path), exist_ok=True)
+
+                # Get system certificates
+                system_certs = self.get_system_ca_bundle()
+                if system_certs:
+                    with open(bundle_path, "w") as f:
+                        f.write(system_certs)
+                else:
+                    Path(bundle_path).touch()
+
+                # Append Cloudflare certificate (with duplicate detection)
+                self.append_certificate_if_missing(CERT_PATH, bundle_path)
+
+                self.print_info(
+                    f"Created {tool_name} CA bundle with Cloudflare certificate"
+                )
+
+        # Set environment variables if provided
+        if env_vars and self.is_install_mode():
+            for env_var in env_vars:
+                self.set_environment_variable(env_var, bundle_path)
+
+        return bundle_path
+
     def certificate_exists_in_file(self, cert_file, target_file):
         """Check if a certificate already exists in a file."""
         if not os.path.exists(target_file) or not os.path.exists(cert_file):
@@ -460,11 +558,31 @@ class FuwarpWindows:
                     os.unlink(tf.name)
 
                     if file_fingerprint == cert_fingerprint:
+                        self.print_debug(f"Certificate already exists in {target_file}")
                         return True
         except Exception as e:
             self.print_debug(f"Error checking certificate existence: {e}")
 
         return False
+
+    def append_certificate_if_missing(self, cert_file, target_file):
+        """Append certificate to target file only if it doesn't already exist."""
+        if self.certificate_exists_in_file(cert_file, target_file):
+            self.print_debug(
+                f"Certificate already exists in {target_file}, skipping append"
+            )
+            return True
+
+        try:
+            with open(cert_file, "r") as cf:
+                cert_content = cf.read()
+            with open(target_file, "a") as f:
+                f.write("\n" + cert_content)
+            self.print_info(f"Appended Cloudflare certificate to {target_file}")
+            return True
+        except Exception as e:
+            self.print_error(f"Failed to append certificate to {target_file}: {e}")
+            return False
 
     def certificate_likely_exists_in_file(self, cert_file, target_file):
         """Fast certificate check using content matching (for status mode)."""
@@ -658,8 +776,13 @@ class FuwarpWindows:
             return False
 
     def download_certificate(self):
-        """Download and verify certificate."""
-        self.print_info("Retrieving Cloudflare WARP certificate...")
+        """Download and verify THG Cloudflare WARP certificate."""
+        if self.use_warp_cli:
+            self.print_info(
+                "Generating THG Cloudflare certificate directly from WARP client..."
+            )
+        else:
+            self.print_info("Retrieving THG Cloudflare WARP certificate...")
 
         # Check if warp-cli is available
         if not self.command_exists("warp-cli"):
@@ -670,6 +793,12 @@ class FuwarpWindows:
 
         # Get current certificate from warp-cli
         try:
+            if self.use_warp_cli:
+                # Force generation from WARP client
+                self.print_debug(
+                    "Using --use-warp-cli: generating fresh THG certificate"
+                )
+
             result = subprocess.run(
                 ["warp-cli", "certs", "--no-paginate"],
                 capture_output=True,
@@ -744,7 +873,7 @@ class FuwarpWindows:
                 os.unlink(temp_cert_path)
                 return False
 
-        self.print_info("WARP certificate retrieved successfully")
+        self.print_info("THG Cloudflare WARP certificate retrieved successfully")
 
         # Check if certificate needs to be saved to CERT_PATH
         needs_save = False
@@ -754,26 +883,34 @@ class FuwarpWindows:
                 existing_cert = f.read()
 
             if existing_cert != warp_cert:
-                self.print_info(f"Certificate at {CERT_PATH} needs updating")
+                self.print_info(f"THG certificate at {CERT_PATH} needs updating")
                 needs_save = True
             else:
-                self.print_info(f"Certificate at {CERT_PATH} is up to date")
+                self.print_info(f"THG certificate at {CERT_PATH} is up to date")
         else:
-            self.print_info(f"Certificate will be saved to {CERT_PATH}")
+            self.print_info(f"THG certificate will be saved to {CERT_PATH}")
             needs_save = True
 
         # Save certificate if needed
         if needs_save:
             if not self.is_install_mode():
-                self.print_action(f"Would save certificate to {CERT_PATH}")
+                self.print_action(f"Would save THG certificate to {CERT_PATH}")
+                self.print_action(
+                    f"Would create .cloudflare-warp directory at {CLOUDFLARE_WARP_DIR}"
+                )
             else:
-                # Ensure directory exists
-                os.makedirs(os.path.dirname(CERT_PATH), exist_ok=True)
+                # Ensure .cloudflare-warp directory exists
+                os.makedirs(CLOUDFLARE_WARP_DIR, exist_ok=True)
+                self.print_info(
+                    f"Created .cloudflare-warp directory at {CLOUDFLARE_WARP_DIR}"
+                )
+
                 # Save certificate
                 shutil.copy(temp_cert_path, CERT_PATH)
-                self.print_info(f"Certificate saved to {CERT_PATH}")
+                self.print_info(f"THG Cloudflare certificate saved to {CERT_PATH}")
+                self.print_info("Certificate is available for custom use by users")
 
-        # Clean up
+        # Clean up temporary file (but keep the saved certificate)
         os.unlink(temp_cert_path)
 
         # Cache the fingerprint for later use
@@ -866,54 +1003,30 @@ class FuwarpWindows:
         if not self.command_exists("node"):
             return
 
+        self.print_info("Setting up Node.js certificate...")
+
+        # Check if NODE_EXTRA_CA_CERTS is already set
         node_extra_ca_certs = os.environ.get("NODE_EXTRA_CA_CERTS", "")
-
-        if node_extra_ca_certs:
-            if os.path.exists(node_extra_ca_certs):
-                # Check if the file contains our certificate
-                if not self.certificate_exists_in_file(CERT_PATH, node_extra_ca_certs):
-                    self.print_info("Setting up Node.js certificate...")
-                    self.print_info(
-                        f"NODE_EXTRA_CA_CERTS is already set to: {node_extra_ca_certs}"
+        if node_extra_ca_certs and os.path.exists(node_extra_ca_certs):
+            # Use existing file but append certificate if missing
+            if not self.certificate_exists_in_file(CERT_PATH, node_extra_ca_certs):
+                if not self.is_install_mode():
+                    self.print_action(
+                        f"Would append Cloudflare certificate to existing {node_extra_ca_certs}"
                     )
-
-                    if not self.is_install_mode():
-                        self.print_action(
-                            f"Would append Cloudflare certificate to {node_extra_ca_certs}"
-                        )
-                    else:
-                        self.print_info(
-                            f"Appending Cloudflare certificate to {node_extra_ca_certs}"
-                        )
-                        with open(CERT_PATH, "r") as cf:
-                            cert_content = cf.read()
-                        with open(node_extra_ca_certs, "a") as f:
-                            # Ensure there's a newline before the certificate
-                            if not cert_content.startswith("\n"):
-                                f.write("\n")
-                            f.write(cert_content)
+                else:
+                    self.append_certificate_if_missing(CERT_PATH, node_extra_ca_certs)
             else:
-                self.print_warn(
-                    f"NODE_EXTRA_CA_CERTS points to a non-existent file: {node_extra_ca_certs}"
+                self.print_info(
+                    f"NODE_EXTRA_CA_CERTS already contains current certificate"
                 )
         else:
-            self.print_info("Setting up Node.js certificate...")
-            # NODE_EXTRA_CA_CERTS not set, create a new bundle
-            node_bundle = os.path.expanduser("~/.cloudflare-warp/node/ca-bundle.pem")
-
-            if not self.is_install_mode():
-                self.print_action(f"Would create Node.js CA bundle at {node_bundle}")
-                self.print_action("Would include Cloudflare certificate in the bundle")
-                self.print_action(f"Would set NODE_EXTRA_CA_CERTS={node_bundle}")
-            else:
-                self.print_info(f"Creating Node.js CA bundle at {node_bundle}")
-                os.makedirs(os.path.dirname(node_bundle), exist_ok=True)
-
-                # Start with just the Cloudflare certificate
-                shutil.copy(CERT_PATH, node_bundle)
-
-                self.set_environment_variable("NODE_EXTRA_CA_CERTS", node_bundle)
-                self.print_info("Created Node.js CA bundle with Cloudflare certificate")
+            # Use consistent bundle management
+            bundle_path = self.setup_consistent_bundle(
+                "node", env_vars=["NODE_EXTRA_CA_CERTS"]
+            )
+            if bundle_path:
+                self.print_info(f"Node.js configured to use CA bundle: {bundle_path}")
 
         # Setup npm cafile if npm is available
         if self.command_exists("npm"):
@@ -933,9 +1046,6 @@ class FuwarpWindows:
         except:
             current_cafile = ""
 
-        # npm needs a full CA bundle, not just a single certificate
-        npm_bundle = os.path.expanduser("~/.cloudflare-warp/npm/ca-bundle.pem")
-
         if current_cafile and current_cafile not in ["null", "undefined"]:
             if os.path.exists(current_cafile):
                 # Check if the file contains our certificate
@@ -948,19 +1058,12 @@ class FuwarpWindows:
                         )
                     else:
                         response = input(
-                            "Do you want to append it to the existing cafile? (y/N) "
+                            f"Found existing npm cafile at {current_cafile}. Append Cloudflare cert? (Y/n) "
                         )
-                        if response.lower() == "y":
-                            self.print_info(
-                                f"Appending Cloudflare certificate to {current_cafile}"
+                        if response.lower() != "n":
+                            self.append_certificate_if_missing(
+                                CERT_PATH, current_cafile
                             )
-                            with open(CERT_PATH, "r") as cf:
-                                cert_content = cf.read()
-                            with open(current_cafile, "a") as f:
-                                # Ensure there's a newline before the certificate
-                                if not cert_content.startswith("\n"):
-                                    f.write("\n")
-                                f.write(cert_content)
             else:
                 self.print_warn(
                     f"npm cafile points to non-existent file: {current_cafile}"
@@ -968,42 +1071,24 @@ class FuwarpWindows:
         else:
             self.print_info("Configuring npm certificate...")
 
-            if not self.is_install_mode():
-                self.print_action(f"Would create full CA bundle at {npm_bundle}")
+            # Use consistent bundle management for npm
+            bundle_path = self.setup_consistent_bundle("npm")
+            if bundle_path and self.is_install_mode():
+                try:
+                    subprocess.run(
+                        ["npm", "config", "set", "cafile", bundle_path],
+                        check=True,
+                        shell=True,
+                    )
+                    self.print_info(f"Configured npm cafile to: {bundle_path}")
+                except FileNotFoundError:
+                    self.print_warn("npm not found - skipping npm configuration")
+                except subprocess.CalledProcessError as e:
+                    self.print_error(f"Failed to configure npm: {e}")
+            elif not self.is_install_mode():
+                npm_bundle = self.get_tool_bundle_path("npm")
+                self.print_action(f"Would create npm CA bundle at {npm_bundle}")
                 self.print_action(f"Would run: npm config set cafile {npm_bundle}")
-            else:
-                response = input(
-                    "Do you want to configure npm with a CA bundle including Cloudflare certificate? (Y/n) "
-                )
-                if response.lower() != "n":
-                    os.makedirs(os.path.dirname(npm_bundle), exist_ok=True)
-
-                    # Try to get system certificates first
-                    system_certs = self.get_system_ca_bundle()
-                    if system_certs:
-                        with open(npm_bundle, "w") as f:
-                            f.write(system_certs)
-
-                    # Append Cloudflare certificate
-                    with open(CERT_PATH, "r") as cf:
-                        cert_content = cf.read()
-                    with open(npm_bundle, "a") as f:
-                        # Ensure there's a newline before the certificate
-                        if not cert_content.startswith("\n"):
-                            f.write("\n")
-                        f.write(cert_content)
-
-                    try:
-                        subprocess.run(
-                            ["npm", "config", "set", "cafile", npm_bundle],
-                            check=True,
-                            shell=True,
-                        )
-                        self.print_info(f"Configured npm cafile to: {npm_bundle}")
-                    except FileNotFoundError:
-                        self.print_warn("npm not found - skipping npm configuration")
-                    except subprocess.CalledProcessError as e:
-                        self.print_error(f"Failed to configure npm: {e}")
 
     def setup_python_cert(self):
         """Setup Python certificate."""
@@ -1013,58 +1098,13 @@ class FuwarpWindows:
 
         self.print_info("Setting up Python certificate...")
 
-        # Create combined certificate bundle for Python
-        python_bundle = os.path.expanduser("~/.python-ca-bundle.pem")
+        # Use consistent bundle management
+        bundle_path = self.setup_consistent_bundle(
+            "python", env_vars=["REQUESTS_CA_BUNDLE", "SSL_CERT_FILE", "CURL_CA_BUNDLE"]
+        )
 
-        requests_ca_bundle = self.get_environment_variable("REQUESTS_CA_BUNDLE")
-
-        if requests_ca_bundle and os.path.exists(requests_ca_bundle):
-            # Check if the file contains our certificate
-            if not self.certificate_exists_in_file(CERT_PATH, requests_ca_bundle):
-                if not self.is_install_mode():
-                    self.print_action(
-                        f"Would append Cloudflare certificate to {requests_ca_bundle}"
-                    )
-                else:
-                    self.print_info(
-                        f"Appending Cloudflare certificate to {requests_ca_bundle}"
-                    )
-                    with open(CERT_PATH, "r") as cf:
-                        cert_content = cf.read()
-                    with open(requests_ca_bundle, "a") as f:
-                        # Ensure there's a newline before the certificate
-                        if not cert_content.startswith("\n"):
-                            f.write("\n")
-                        f.write(cert_content)
-        else:
-            if not self.is_install_mode():
-                self.print_action(f"Would create Python CA bundle at {python_bundle}")
-                self.print_action(
-                    "Would copy system certificates and append Cloudflare certificate"
-                )
-            else:
-                self.print_info(f"Creating Python CA bundle at {python_bundle}")
-
-                # Get system certificates
-                system_certs = self.get_system_ca_bundle()
-                if system_certs:
-                    with open(python_bundle, "w") as f:
-                        f.write(system_certs)
-                else:
-                    Path(python_bundle).touch()
-
-                # Append Cloudflare certificate
-                with open(CERT_PATH, "r") as cf:
-                    cert_content = cf.read()
-                with open(python_bundle, "a") as f:
-                    # Ensure there's a newline before the certificate
-                    if not cert_content.startswith("\n"):
-                        f.write("\n")
-                    f.write(cert_content)
-
-            self.set_environment_variable("REQUESTS_CA_BUNDLE", python_bundle)
-            self.set_environment_variable("SSL_CERT_FILE", python_bundle)
-            self.set_environment_variable("CURL_CA_BUNDLE", python_bundle)
+        if bundle_path:
+            self.print_info(f"Python configured to use CA bundle: {bundle_path}")
 
     def setup_gcloud_cert(self):
         """Setup gcloud certificate."""
@@ -1072,8 +1112,67 @@ class FuwarpWindows:
             self.print_info("gcloud not found, skipping gcloud setup")
             return
 
-        gcloud_cert_dir = os.path.normpath(os.path.expanduser("~/.config/gcloud/certs"))
-        gcloud_bundle = os.path.join(gcloud_cert_dir, "combined-ca-bundle.pem")
+        self.print_info("Setting up gcloud certificate...")
+
+        # First, try to use Windows certificate store (recommended method)
+        self.print_info("gcloud uses Windows certificate store by default")
+
+        # Check if certificate is already in Windows store
+        if self.check_certificate_in_store(CERT_PATH, "Root"):
+            self.print_info(
+                "✓ Certificate already in Windows Root store - gcloud should work"
+            )
+
+            # Clear any custom CA file setting to use system store
+            try:
+                result = subprocess.run(
+                    ["gcloud", "config", "get-value", "core/custom_ca_certs_file"],
+                    capture_output=True,
+                    text=True,
+                    shell=True,
+                )
+                current_ca_file = (
+                    result.stdout.strip() if result.returncode == 0 else ""
+                )
+
+                if current_ca_file:
+                    if not self.is_install_mode():
+                        self.print_action(
+                            "Would unset gcloud custom CA to use Windows certificate store"
+                        )
+                    else:
+                        response = input(
+                            "Remove custom CA setting to use Windows certificate store? (Y/n) "
+                        )
+                        if response.lower() != "n":
+                            subprocess.run(
+                                [
+                                    "gcloud",
+                                    "config",
+                                    "unset",
+                                    "core/custom_ca_certs_file",
+                                ],
+                                capture_output=True,
+                                shell=True,
+                            )
+                            self.print_info(
+                                "Configured gcloud to use Windows certificate store"
+                            )
+            except:
+                pass
+            return
+
+        # If certificate not in Windows store, install it there first
+        self.print_info("Installing certificate to Windows Root store for gcloud...")
+        if self.install_certificate_to_store(CERT_PATH, "Root"):
+            self.print_info("✓ Certificate installed to Windows Root store")
+            self.print_info("✓ gcloud will now use Windows certificate store")
+            return
+
+        # Fallback: If Windows store installation failed, use custom bundle
+        self.print_warn(
+            "Windows certificate store installation failed, falling back to custom bundle"
+        )
 
         # Check current gcloud custom CA setting
         try:
@@ -1099,51 +1198,25 @@ class FuwarpWindows:
         if not needs_setup:
             return
 
-        self.print_info("Setting up gcloud certificate...")
-
-        if not self.is_install_mode():
-            self.print_action(f"Would create directory: {gcloud_cert_dir}")
-            self.print_action(f"Would create gcloud CA bundle at {gcloud_bundle}")
-            self.print_action(
-                "Would copy system certificates and append Cloudflare certificate"
-            )
-            self.print_action(
-                f"Would run: gcloud config set core/custom_ca_certs_file {gcloud_bundle}"
-            )
-        else:
-            # Create directory if it doesn't exist
-            os.makedirs(gcloud_cert_dir, exist_ok=True)
-
-            # Create combined bundle
-            self.print_info(f"Creating gcloud CA bundle at {gcloud_bundle}")
-
-            # Get system certificates
-            system_certs = self.get_system_ca_bundle()
-            if system_certs:
-                with open(gcloud_bundle, "w") as f:
-                    f.write(system_certs)
-            else:
-                Path(gcloud_bundle).touch()
-
-            # Append Cloudflare certificate
-            with open(CERT_PATH, "r") as cf:
-                cert_content = cf.read()
-            with open(gcloud_bundle, "a") as f:
-                # Ensure there's a newline before the certificate
-                if not cert_content.startswith("\n"):
-                    f.write("\n")
-                f.write(cert_content)
-
+        # Use consistent bundle management as fallback
+        bundle_path = self.setup_consistent_bundle("gcloud")
+        if bundle_path and self.is_install_mode():
             # Configure gcloud
             result = subprocess.run(
-                ["gcloud", "config", "set", "core/custom_ca_certs_file", gcloud_bundle],
+                ["gcloud", "config", "set", "core/custom_ca_certs_file", bundle_path],
                 capture_output=True,
                 shell=True,
             )
             if result.returncode == 0:
-                self.print_info("gcloud configured successfully")
+                self.print_info(f"gcloud configured to use CA bundle: {bundle_path}")
             else:
                 self.print_error("Failed to configure gcloud")
+        elif not self.is_install_mode():
+            gcloud_bundle = self.get_tool_bundle_path("gcloud")
+            self.print_action(f"Would create gcloud CA bundle at {gcloud_bundle}")
+            self.print_action(
+                f"Would run: gcloud config set core/custom_ca_certs_file {gcloud_bundle}"
+            )
 
     def setup_java_cert(self):
         """Setup Java certificate."""
@@ -1298,6 +1371,16 @@ class FuwarpWindows:
             self.print_action(f"Would add to {wgetrc_path}: {config_line}")
         else:
             self.print_info(f"Adding configuration to {wgetrc_path}")
+            # Check if configuration already exists to avoid duplicates
+            if os.path.exists(wgetrc_path):
+                with open(wgetrc_path, "r") as f:
+                    existing_content = f.read()
+                if config_line in existing_content:
+                    self.print_info(
+                        "ca_certificate configuration already exists in wget"
+                    )
+                    return
+
             with open(wgetrc_path, "a") as f:
                 f.write(f"\n{config_line}\n")
             self.print_info("Added ca_certificate to wget configuration")
@@ -1329,11 +1412,11 @@ class FuwarpWindows:
         if not self.is_install_mode():
             self.print_action("Would copy certificate to Podman VM")
             self.print_action(
-                f"Would run: podman machine ssh 'sudo tee /etc/pki/ca-trust/source/anchors/cloudflare-warp.pem' < {CERT_PATH}"
+                f"Would run: podman machine ssh 'sudo tee /etc/pki/ca-trust/source/anchors/THG-CloudflareCert.pem' < {CERT_PATH}"
             )
             self.print_action("Would run: podman machine ssh 'sudo update-ca-trust'")
         else:
-            self.print_info("Copying certificate to Podman VM...")
+            self.print_info("Copying THG certificate to Podman VM...")
 
             # Copy certificate into Podman VM
             with open(CERT_PATH, "r") as f:
@@ -1344,7 +1427,7 @@ class FuwarpWindows:
                     "podman",
                     "machine",
                     "ssh",
-                    "sudo tee /etc/pki/ca-trust/source/anchors/cloudflare-warp.pem",
+                    "sudo tee /etc/pki/ca-trust/source/anchors/THG-CloudflareCert.pem",
                 ],
                 input=cert_content,
                 text=True,
@@ -1376,11 +1459,11 @@ class FuwarpWindows:
         if not self.is_install_mode():
             self.print_action("Would copy certificate to Rancher VM")
             self.print_action(
-                f"Would run: rdctl shell sudo tee /usr/local/share/ca-certificates/cloudflare-warp.pem < {CERT_PATH}"
+                f"Would run: rdctl shell sudo tee /usr/local/share/ca-certificates/THG-CloudflareCert.pem < {CERT_PATH}"
             )
             self.print_action("Would run: rdctl shell sudo update-ca-certificates")
         else:
-            self.print_info("Copying certificate to Rancher VM...")
+            self.print_info("Copying THG certificate to Rancher VM...")
 
             # Copy certificate into Rancher VM
             with open(CERT_PATH, "r") as f:
@@ -1390,7 +1473,7 @@ class FuwarpWindows:
                 [
                     "rdctl",
                     "shell",
-                    "sudo tee /usr/local/share/ca-certificates/cloudflare-warp.pem",
+                    "sudo tee /usr/local/share/ca-certificates/THG-CloudflareCert.pem",
                 ],
                 input=cert_content,
                 text=True,
@@ -1431,6 +1514,7 @@ class FuwarpWindows:
             current_ca_info = ""
 
         if current_ca_info:
+            # Custom CA file is already configured
             if os.path.exists(current_ca_info):
                 if not self.certificate_exists_in_file(CERT_PATH, current_ca_info):
                     if not self.is_install_mode():
@@ -1439,61 +1523,57 @@ class FuwarpWindows:
                         )
                     else:
                         response = input(
-                            "Do you want to append the certificate to the existing CA file? (y/N) "
+                            f"Found existing Git CA file at {current_ca_info}. Append Cloudflare cert? (Y/n) "
                         )
-                        if response.lower() == "y":
-                            with open(CERT_PATH, "r") as cf:
-                                cert_content = cf.read()
-                            with open(current_ca_info, "a") as f:
-                                # Ensure there's a newline before the certificate
-                                if not cert_content.startswith("\n"):
-                                    f.write("\n")
-                                f.write(cert_content)
-                            self.print_info(
-                                f"Appended certificate to {current_ca_info}"
+                        if response.lower() != "n":
+                            self.append_certificate_if_missing(
+                                CERT_PATH, current_ca_info
                             )
             else:
                 self.print_warn(
                     f"Git http.sslCAInfo points to non-existent file: {current_ca_info}"
                 )
         else:
-            # No CA info set, create a bundle
-            git_bundle = os.path.expanduser("~/.cloudflare-warp/git/ca-bundle.pem")
+            # No custom CA configured - try Windows certificate store first (recommended)
+            self.print_info("Git uses Windows certificate store by default")
 
-            if not self.is_install_mode():
+            # Check if certificate is already in Windows store
+            if self.check_certificate_in_store(CERT_PATH, "Root"):
+                self.print_info(
+                    "✓ Certificate already in Windows Root store - Git should work"
+                )
+                return
+
+            # If certificate not in Windows store, install it there first
+            self.print_info("Installing certificate to Windows Root store for Git...")
+            if self.install_certificate_to_store(CERT_PATH, "Root"):
+                self.print_info("✓ Certificate installed to Windows Root store")
+                self.print_info("✓ Git will now use Windows certificate store")
+                return
+
+            # Fallback: If Windows store installation failed, use custom bundle
+            self.print_warn(
+                "Windows certificate store installation failed, falling back to custom bundle"
+            )
+
+            # Use consistent bundle management as fallback
+            bundle_path = self.setup_consistent_bundle("git")
+            if bundle_path and self.is_install_mode():
+                # Configure git
+                result = subprocess.run(
+                    ["git", "config", "--global", "http.sslCAInfo", bundle_path],
+                    capture_output=True,
+                )
+                if result.returncode == 0:
+                    self.print_info(f"Git configured to use CA bundle: {bundle_path}")
+                else:
+                    self.print_error("Failed to configure Git")
+            elif not self.is_install_mode():
+                git_bundle = self.get_tool_bundle_path("git")
                 self.print_action(f"Would create Git CA bundle at {git_bundle}")
                 self.print_action(
                     f"Would run: git config --global http.sslCAInfo {git_bundle}"
                 )
-            else:
-                os.makedirs(os.path.dirname(git_bundle), exist_ok=True)
-
-                # Get system certificates
-                system_certs = self.get_system_ca_bundle()
-                if system_certs:
-                    with open(git_bundle, "w") as f:
-                        f.write(system_certs)
-                else:
-                    Path(git_bundle).touch()
-
-                # Append Cloudflare certificate
-                with open(CERT_PATH, "r") as cf:
-                    cert_content = cf.read()
-                with open(git_bundle, "a") as f:
-                    # Ensure there's a newline before the certificate
-                    if not cert_content.startswith("\n"):
-                        f.write("\n")
-                    f.write(cert_content)
-
-                # Configure git
-                result = subprocess.run(
-                    ["git", "config", "--global", "http.sslCAInfo", git_bundle],
-                    capture_output=True,
-                )
-                if result.returncode == 0:
-                    self.print_info(f"Git configured to use CA bundle: {git_bundle}")
-                else:
-                    self.print_error("Failed to configure Git")
 
     def verify_connection(self, tool_name):
         """Verify if a tool can connect through WARP."""
@@ -1757,6 +1837,34 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
                 self.print_info(
                     "  ✓ Python can connect through WARP without additional configuration"
                 )
+
+                # Even if system trust works, check if environment variables are set
+                # and validate their completeness
+                env_vars_set = False
+                for env_var in ["REQUESTS_CA_BUNDLE", "SSL_CERT_FILE"]:
+                    env_value = self.get_environment_variable(env_var)
+                    if env_value:
+                        env_vars_set = True
+                        if os.path.exists(env_value):
+                            if not self.certificate_exists_in_file(
+                                temp_warp_cert, env_value
+                            ):
+                                self.print_warn(
+                                    f"  ⚠ {env_var} is set but doesn't contain current WARP certificate"
+                                )
+                                self.print_action(
+                                    f"    Consider updating {env_value} or unsetting {env_var}"
+                                )
+                        else:
+                            self.print_warn(
+                                f"  ⚠ {env_var} points to non-existent file: {env_value}"
+                            )
+                            has_issues = True
+
+                if not env_vars_set:
+                    self.print_info(
+                        "  ✓ Using system certificate trust (no custom bundle needed)"
+                    )
             else:
                 # Python doesn't trust system cert, check environment variables
                 python_configured = False
@@ -1779,12 +1887,14 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
                                 "  ✗ REQUESTS_CA_BUNDLE file exists but doesn't contain current WARP certificate"
                             )
                             self.print_action(
-                                "    Run with --fix to create a new bundle with both certificates"
+                                "    Run with --fix to update the bundle with current certificate"
                             )
+                            has_issues = True
                     else:
                         self.print_warn(
                             f"  ✗ REQUESTS_CA_BUNDLE points to non-existent file: {requests_ca_bundle}"
                         )
+                        has_issues = True
 
                 # Also check SSL_CERT_FILE if set
                 ssl_cert_file = self.get_environment_variable("SSL_CERT_FILE")
@@ -1798,6 +1908,16 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
                                 "  ✓ SSL_CERT_FILE contains current WARP certificate"
                             )
                             python_configured = True
+                        else:
+                            self.print_warn(
+                                "  ✗ SSL_CERT_FILE file exists but doesn't contain current WARP certificate"
+                            )
+                            has_issues = True
+                    else:
+                        self.print_warn(
+                            f"  ✗ SSL_CERT_FILE points to non-existent file: {ssl_cert_file}"
+                        )
+                        has_issues = True
 
                 if not python_configured:
                     if not requests_ca_bundle and not ssl_cert_file:
@@ -1807,8 +1927,9 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
                         self.print_warn(
                             "  ✗ No Python certificate environment variables configured"
                         )
-                        has_issues = True
-                    else:
+                        self.print_action(
+                            "    Run with --fix --tools python to configure certificate bundle"
+                        )
                         has_issues = True
         else:
             self.print_info("  - Python not installed")
@@ -1828,9 +1949,10 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
                 gcloud_ca = result.stdout.strip() if result.returncode == 0 else ""
 
                 if gcloud_ca and os.path.exists(gcloud_ca):
+                    # Custom CA file is configured
                     if self.certificate_exists_in_file(temp_warp_cert, gcloud_ca):
                         self.print_info(
-                            "  ✓ gcloud configured with current WARP certificate"
+                            "  ✓ gcloud configured with current WARP certificate (custom bundle)"
                         )
                     else:
                         self.print_warn(
@@ -1838,14 +1960,20 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
                         )
                         has_issues = True
                 else:
-                    self.print_warn("  ✗ gcloud not configured with custom CA")
-                    self.print_info(
-                        "    gcloud needs core/custom_ca_certs_file setting for WARP certificates"
-                    )
-                    self.print_action(
-                        "    Fix: Run with --fix --tools gcloud to configure certificate bundle"
-                    )
-                    has_issues = True
+                    # No custom CA configured - check Windows certificate store (preferred)
+                    if self.check_certificate_in_store(temp_warp_cert, "Root"):
+                        self.print_info("  ✓ Certificate found in Windows Root store")
+                        self.print_info(
+                            "  ✓ gcloud using Windows certificate store (recommended)"
+                        )
+                    else:
+                        self.print_warn(
+                            "  ✗ Certificate not in Windows store and no custom CA configured"
+                        )
+                        self.print_action(
+                            "    Fix: Run with --fix --tools gcloud to install certificate"
+                        )
+                        has_issues = True
             except:
                 self.print_warn("  ✗ Failed to check gcloud configuration")
                 has_issues = True
@@ -1934,7 +2062,7 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
                             "podman",
                             "machine",
                             "ssh",
-                            "test -f /etc/pki/ca-trust/source/anchors/cloudflare-warp.pem",
+                            "test -f /etc/pki/ca-trust/source/anchors/THG-CloudflareCert.pem",
                         ],
                         capture_output=True,
                         shell=True,
@@ -1970,7 +2098,7 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
                         [
                             "rdctl",
                             "shell",
-                            "test -f /usr/local/share/ca-certificates/cloudflare-warp.pem",
+                            "test -f /usr/local/share/ca-certificates/THG-CloudflareCert.pem",
                         ],
                         capture_output=True,
                         shell=True,
@@ -2007,9 +2135,10 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
                 git_ca_info = result.stdout.strip() if result.returncode == 0 else ""
 
                 if git_ca_info and os.path.exists(git_ca_info):
+                    # Custom CA file is configured
                     if self.certificate_exists_in_file(temp_warp_cert, git_ca_info):
                         self.print_info(
-                            "  ✓ Git configured with current WARP certificate"
+                            "  ✓ Git configured with current WARP certificate (custom bundle)"
                         )
                     else:
                         self.print_warn(
@@ -2017,14 +2146,20 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
                         )
                         has_issues = True
                 else:
-                    self.print_warn("  ✗ Git not configured with custom CA")
-                    self.print_info(
-                        "    Git needs http.sslCAInfo setting for WARP certificates"
-                    )
-                    self.print_action(
-                        "    Fix: Run with --fix --tools git to configure certificate bundle"
-                    )
-                    has_issues = True
+                    # No custom CA configured - check Windows certificate store (preferred)
+                    if self.check_certificate_in_store(temp_warp_cert, "Root"):
+                        self.print_info("  ✓ Certificate found in Windows Root store")
+                        self.print_info(
+                            "  ✓ Git using Windows certificate store (recommended)"
+                        )
+                    else:
+                        self.print_warn(
+                            "  ✗ Certificate not in Windows store and no custom CA configured"
+                        )
+                        self.print_action(
+                            "    Fix: Run with --fix --tools git to install certificate"
+                        )
+                        has_issues = True
             except:
                 self.print_warn("  ✗ Failed to check Git configuration")
                 has_issues = True
@@ -2389,34 +2524,61 @@ def main():
     parser = argparse.ArgumentParser(
         description="Cloudflare WARP Certificate Fixer Upper for Windows",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=f"{version_str} | Default: status check only (use --fix to make changes)",
+        epilog=f"""
+Examples:
+  python fuwarp-windows.py                    # Check status of all tools
+  python fuwarp-windows.py --fix              # Fix all detected issues
+  python fuwarp-windows.py --tools node       # Check only Node.js
+  python fuwarp-windows.py --fix --tools python,git  # Fix Python and Git only
+  python fuwarp-windows.py --list-tools       # Show available tools
+
+{version_str} | Default: status check only (use --fix to make changes)
+        """,
     )
 
-    parser.add_argument(
+    # Main operation modes
+    mode_group = parser.add_argument_group("Operation Modes")
+    mode_group.add_argument(
         "--fix",
         action="store_true",
-        help="Actually make changes (default is status check only)",
+        help="Apply fixes to certificate configurations (default: status check only)",
     )
-    parser.add_argument(
+    mode_group.add_argument(
+        "--list-tools",
+        action="store_true",
+        help="List all available tools and their tags, then exit",
+    )
+
+    # Tool selection
+    tool_group = parser.add_argument_group("Tool Selection")
+    tool_group.add_argument(
         "--tools",
         "--tool",
         action="append",
         dest="tools",
-        help="Specific tools to check/fix (can be specified multiple times). "
-        "Examples: --tools node --tools python or --tools node-npm,gcloud",
+        metavar="TOOL",
+        help="Select specific tools to process (can be used multiple times)\n"
+        "Use tool names or tags. Examples: node, python, gcloud, node-npm",
     )
-    parser.add_argument(
-        "--list-tools",
+
+    # Certificate options
+    cert_group = parser.add_argument_group("Certificate Options")
+    cert_group.add_argument(
+        "--use-warp-cli",
         action="store_true",
-        help="List all available tools and their tags",
+        help="Force fresh certificate generation from WARP client\n"
+        "(bypasses cached certificates)",
     )
-    parser.add_argument(
+
+    # Output options
+    output_group = parser.add_argument_group("Output Options")
+    output_group.add_argument(
         "--debug",
         "--verbose",
         action="store_true",
-        help="Show detailed debug information",
+        help="Show detailed debug information and verbose output",
     )
-    parser.add_argument(
+    output_group.add_argument(
         "--version", action="version", version=f"%(prog)s {VERSION_INFO['version']}"
     )
 
@@ -2447,7 +2609,12 @@ def main():
     mode = "install" if args.fix else "status"
 
     # Create and run fuwarp instance
-    fuwarp = FuwarpWindows(mode=mode, debug=args.debug, selected_tools=selected_tools)
+    fuwarp = FuwarpWindows(
+        mode=mode,
+        debug=args.debug,
+        selected_tools=selected_tools,
+        use_warp_cli=args.use_warp_cli,
+    )
     exit_code = fuwarp.main()
     sys.exit(exit_code)
 
