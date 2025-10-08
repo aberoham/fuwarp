@@ -175,6 +175,13 @@ class FuwarpPython:
                 'check_func': self.check_java_status,
                 'description': 'Java runtime and development kit'
             },
+            'jenv': {
+                'name': 'jenv (Java Environment Manager)',
+                'tags': ['jenv', 'java', 'jvm', 'jdk'],
+                'setup_func': self.setup_jenv_cert,
+                'check_func': self.check_jenv_status,
+                'description': 'jenv-managed Java installations'
+            },
             'dbeaver': {
                 'name': 'DBeaver',
                 'tags': ['dbeaver', 'database', 'db'],
@@ -1254,7 +1261,42 @@ class FuwarpPython:
                         self.print_warn("gcloud diagnostics timed out, skipping")
             else:
                 self.print_error("Failed to configure gcloud")
-    
+
+    def get_jenv_java_homes(self):
+        """Get unique Java home directories from jenv.
+
+        Returns:
+            list: List of unique physical JDK installation paths
+        """
+        if not self.command_exists('jenv'):
+            return []
+
+        try:
+            result = subprocess.run(
+                ['jenv', 'versions', '--verbose'],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+
+            if result.returncode != 0:
+                return []
+
+            java_homes = set()
+            for line in result.stdout.splitlines():
+                # Look for lines with --> which indicate symlink targets
+                if '-->' in line:
+                    # Extract path after -->
+                    path = line.split('-->')[1].strip()
+                    # Skip "system" entries that point to user home
+                    if path and not path.endswith(os.path.expanduser('~')):
+                        java_homes.add(path)
+
+            return sorted(list(java_homes))
+        except Exception as e:
+            self.print_debug(f"Error getting jenv Java homes: {e}")
+            return []
+
     def setup_java_cert(self):
         """Setup Java certificate."""
         if not self.command_exists('java') and not self.command_exists('keytool'):
@@ -1323,7 +1365,68 @@ class FuwarpPython:
                 self.print_info("Certificate added to Java keystore successfully")
             else:
                 self.print_warn("Failed to add certificate to Java keystore (may require sudo)")
-    
+
+    def setup_jenv_cert(self):
+        """Setup Java certificates for all jenv-managed Java installations."""
+        java_homes = self.get_jenv_java_homes()
+
+        if not java_homes:
+            return
+
+        if not self.command_exists('keytool'):
+            self.print_warn("keytool not found, cannot configure jenv Java installations")
+            return
+
+        self.print_info(f"Found {len(java_homes)} jenv-managed Java installation(s)")
+
+        for java_home in java_homes:
+            # Extract version from path for display
+            version_name = os.path.basename(java_home)
+            if 'Contents/Home' in java_home:
+                # macOS .jdk format: /Library/Java/JavaVirtualMachines/temurin-17.jdk/Contents/Home
+                version_name = os.path.basename(os.path.dirname(os.path.dirname(java_home)))
+                version_name = version_name.replace('.jdk', '')
+
+            cacerts = os.path.join(java_home, "lib/security/cacerts")
+            if not os.path.exists(cacerts):
+                cacerts = os.path.join(java_home, "jre/lib/security/cacerts")
+
+            if not os.path.exists(cacerts):
+                self.print_warn(f"  Skipping {version_name}: cacerts file not found at {cacerts}")
+                continue
+
+            # Check if certificate already exists
+            try:
+                result = subprocess.run(
+                    ['keytool', '-list', '-alias', 'cloudflare-zerotrust',
+                     '-keystore', cacerts, '-storepass', 'changeit'],
+                    capture_output=True
+                )
+                if result.returncode == 0 and 'cloudflare-zerotrust' in result.stdout.decode():
+                    # Certificate already exists
+                    self.print_info(f"  ✓ {version_name}: Certificate already installed")
+                    continue
+            except:
+                pass
+
+            self.print_info(f"  Installing certificate for {version_name}...")
+
+            if not self.is_install_mode():
+                self.print_action(f"    Would import certificate to: {cacerts}")
+            else:
+                result = subprocess.run(
+                    ['keytool', '-import', '-trustcacerts', '-alias', 'cloudflare-zerotrust',
+                     '-file', CERT_PATH, '-keystore', cacerts, '-storepass', 'changeit', '-noprompt'],
+                    capture_output=True,
+                    text=True
+                )
+                if result.returncode == 0:
+                    self.print_info(f"    ✓ {version_name}: Certificate added successfully")
+                else:
+                    self.print_warn(f"    ✗ {version_name}: Failed to add certificate (may require sudo)")
+                    if len(result.stdout) > 0:
+                        self.print_warn(f"      Keytool response: {result.stdout}")
+
     def setup_dbeaver_cert(self):
         """Setup DBeaver certificate."""
         dbeaver_keytool = "/Applications/DBeaver.app/Contents/Eclipse/jre/Contents/Home/bin/keytool"
@@ -1969,6 +2072,54 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
                 has_issues = True
         else:
             self.print_info("  - Java not installed (would configure if present)")
+        return has_issues
+
+    def check_jenv_status(self, temp_warp_cert):
+        """Check jenv-managed Java installations status."""
+        has_issues = False
+        java_homes = self.get_jenv_java_homes()
+
+        if not java_homes:
+            return has_issues
+
+        if not self.command_exists('keytool'):
+            self.print_warn("  ✗ keytool not found, cannot check jenv Java installations")
+            return True
+
+        self.print_info(f"  Checking {len(java_homes)} jenv-managed Java installation(s):")
+
+        for java_home in java_homes:
+            # Extract version from path for display
+            version_name = os.path.basename(java_home)
+            if 'Contents/Home' in java_home:
+                version_name = os.path.basename(os.path.dirname(os.path.dirname(java_home)))
+                version_name = version_name.replace('.jdk', '')
+
+            cacerts = os.path.join(java_home, "lib/security/cacerts")
+            if not os.path.exists(cacerts):
+                cacerts = os.path.join(java_home, "jre/lib/security/cacerts")
+
+            if not os.path.exists(cacerts):
+                self.print_warn(f"    ✗ {version_name}: cacerts file not found")
+                has_issues = True
+                continue
+
+            # Check if certificate exists
+            try:
+                result = subprocess.run(
+                    ['keytool', '-list', '-alias', 'cloudflare-zerotrust',
+                     '-keystore', cacerts, '-storepass', 'changeit'],
+                    capture_output=True
+                )
+                if result.returncode == 0 and 'cloudflare-zerotrust' in result.stdout.decode():
+                    self.print_info(f"    ✓ {version_name}: Certificate installed")
+                else:
+                    self.print_warn(f"    ✗ {version_name}: Certificate missing")
+                    has_issues = True
+            except:
+                self.print_warn(f"    ✗ {version_name}: Failed to check keystore")
+                has_issues = True
+
         return has_issues
 
     def check_dbeaver_status(self, temp_warp_cert):
