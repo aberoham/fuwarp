@@ -1368,6 +1368,8 @@ class FuwarpPython:
                 self.print_info("Certificate added to DBeaver keystore successfully")
             else:
                 self.print_warn("Failed to add certificate to DBeaver keystore (may require sudo)")
+                if len(result.stdout) > 0:
+                    self.print_warn(f"Keytool response: {result.stdout.decode('utf-8')}")
                 self.print_warn("You may need to run: sudo ./fuwarp.py --fix")
     
     def setup_wget_cert(self):
@@ -1499,14 +1501,14 @@ class FuwarpPython:
                 cert_content = f.read()
             
             result = subprocess.run(
-                ['rdctl', 'shell', 'sudo tee /usr/local/share/ca-certificates/cloudflare-warp.pem'],
+                ['rdctl', 'shell', 'sudo', 'tee', '/usr/local/share/ca-certificates/cloudflare-warp.pem'],
                 input=cert_content, text=True, capture_output=True
             )
             
             if result.returncode == 0:
                 # Update CA certificates
                 result = subprocess.run(
-                    ['rdctl', 'shell', 'sudo update-ca-certificates'],
+                    ['rdctl', 'shell', 'sudo', 'update-ca-certificates'],
                     capture_output=True
                 )
                 if result.returncode == 0:
@@ -2059,7 +2061,7 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
                 if 'rdctl' in result.stdout:
                     # Check if certificate exists in Rancher VM
                     result = subprocess.run(
-                        ['rdctl', 'shell', 'test -f /usr/local/share/ca-certificates/cloudflare-warp.pem'],
+                        ['rdctl', 'shell', 'test', '-f', '/usr/local/share/ca-certificates/cloudflare-warp.pem'],
                         capture_output=True
                     )
                     if result.returncode == 0:
