@@ -175,6 +175,13 @@ class FuwarpPython:
                 'check_func': self.check_java_status,
                 'description': 'Java runtime and development kit'
             },
+            'jenv': {
+                'name': 'jenv (Java Environment Manager)',
+                'tags': ['jenv', 'java', 'jvm', 'jdk'],
+                'setup_func': self.setup_jenv_cert,
+                'check_func': self.check_jenv_status,
+                'description': 'jenv-managed Java installations'
+            },
             'dbeaver': {
                 'name': 'DBeaver',
                 'tags': ['dbeaver', 'database', 'db'],
