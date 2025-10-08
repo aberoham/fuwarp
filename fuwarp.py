@@ -1254,7 +1254,42 @@ class FuwarpPython:
                         self.print_warn("gcloud diagnostics timed out, skipping")
             else:
                 self.print_error("Failed to configure gcloud")
-    
+
+    def get_jenv_java_homes(self):
+        """Get unique Java home directories from jenv.
+
+        Returns:
+            list: List of unique physical JDK installation paths
+        """
+        if not self.command_exists('jenv'):
+            return []
+
+        try:
+            result = subprocess.run(
+                ['jenv', 'versions', '--verbose'],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+
+            if result.returncode != 0:
+                return []
+
+            java_homes = set()
+            for line in result.stdout.splitlines():
+                # Look for lines with --> which indicate symlink targets
+                if '-->' in line:
+                    # Extract path after -->
+                    path = line.split('-->')[1].strip()
+                    # Skip "system" entries that point to user home
+                    if path and not path.endswith(os.path.expanduser('~')):
+                        java_homes.add(path)
+
+            return sorted(list(java_homes))
+        except Exception as e:
+            self.print_debug(f"Error getting jenv Java homes: {e}")
+            return []
+
     def setup_java_cert(self):
         """Setup Java certificate."""
         if not self.command_exists('java') and not self.command_exists('keytool'):
