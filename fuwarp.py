@@ -1358,7 +1358,68 @@ class FuwarpPython:
                 self.print_info("Certificate added to Java keystore successfully")
             else:
                 self.print_warn("Failed to add certificate to Java keystore (may require sudo)")
-    
+
+    def setup_jenv_cert(self):
+        """Setup Java certificates for all jenv-managed Java installations."""
+        java_homes = self.get_jenv_java_homes()
+
+        if not java_homes:
+            return
+
+        if not self.command_exists('keytool'):
+            self.print_warn("keytool not found, cannot configure jenv Java installations")
+            return
+
+        self.print_info(f"Found {len(java_homes)} jenv-managed Java installation(s)")
+
+        for java_home in java_homes:
+            # Extract version from path for display
+            version_name = os.path.basename(java_home)
+            if 'Contents/Home' in java_home:
+                # macOS .jdk format: /Library/Java/JavaVirtualMachines/temurin-17.jdk/Contents/Home
+                version_name = os.path.basename(os.path.dirname(os.path.dirname(java_home)))
+                version_name = version_name.replace('.jdk', '')
+
+            cacerts = os.path.join(java_home, "lib/security/cacerts")
+            if not os.path.exists(cacerts):
+                cacerts = os.path.join(java_home, "jre/lib/security/cacerts")
+
+            if not os.path.exists(cacerts):
+                self.print_warn(f"  Skipping {version_name}: cacerts file not found at {cacerts}")
+                continue
+
+            # Check if certificate already exists
+            try:
+                result = subprocess.run(
+                    ['keytool', '-list', '-alias', 'cloudflare-zerotrust',
+                     '-keystore', cacerts, '-storepass', 'changeit'],
+                    capture_output=True
+                )
+                if result.returncode == 0 and 'cloudflare-zerotrust' in result.stdout.decode():
+                    # Certificate already exists
+                    self.print_info(f"  ✓ {version_name}: Certificate already installed")
+                    continue
+            except:
+                pass
+
+            self.print_info(f"  Installing certificate for {version_name}...")
+
+            if not self.is_install_mode():
+                self.print_action(f"    Would import certificate to: {cacerts}")
+            else:
+                result = subprocess.run(
+                    ['keytool', '-import', '-trustcacerts', '-alias', 'cloudflare-zerotrust',
+                     '-file', CERT_PATH, '-keystore', cacerts, '-storepass', 'changeit', '-noprompt'],
+                    capture_output=True,
+                    text=True
+                )
+                if result.returncode == 0:
+                    self.print_info(f"    ✓ {version_name}: Certificate added successfully")
+                else:
+                    self.print_warn(f"    ✗ {version_name}: Failed to add certificate (may require sudo)")
+                    if len(result.stdout) > 0:
+                        self.print_warn(f"      Keytool response: {result.stdout}")
+
     def setup_dbeaver_cert(self):
         """Setup DBeaver certificate."""
         dbeaver_keytool = "/Applications/DBeaver.app/Contents/Eclipse/jre/Contents/Home/bin/keytool"
