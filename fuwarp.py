@@ -2065,6 +2065,54 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
             self.print_info("  - Java not installed (would configure if present)")
         return has_issues
 
+    def check_jenv_status(self, temp_warp_cert):
+        """Check jenv-managed Java installations status."""
+        has_issues = False
+        java_homes = self.get_jenv_java_homes()
+
+        if not java_homes:
+            return has_issues
+
+        if not self.command_exists('keytool'):
+            self.print_warn("  ✗ keytool not found, cannot check jenv Java installations")
+            return True
+
+        self.print_info(f"  Checking {len(java_homes)} jenv-managed Java installation(s):")
+
+        for java_home in java_homes:
+            # Extract version from path for display
+            version_name = os.path.basename(java_home)
+            if 'Contents/Home' in java_home:
+                version_name = os.path.basename(os.path.dirname(os.path.dirname(java_home)))
+                version_name = version_name.replace('.jdk', '')
+
+            cacerts = os.path.join(java_home, "lib/security/cacerts")
+            if not os.path.exists(cacerts):
+                cacerts = os.path.join(java_home, "jre/lib/security/cacerts")
+
+            if not os.path.exists(cacerts):
+                self.print_warn(f"    ✗ {version_name}: cacerts file not found")
+                has_issues = True
+                continue
+
+            # Check if certificate exists
+            try:
+                result = subprocess.run(
+                    ['keytool', '-list', '-alias', 'cloudflare-zerotrust',
+                     '-keystore', cacerts, '-storepass', 'changeit'],
+                    capture_output=True
+                )
+                if result.returncode == 0 and 'cloudflare-zerotrust' in result.stdout.decode():
+                    self.print_info(f"    ✓ {version_name}: Certificate installed")
+                else:
+                    self.print_warn(f"    ✗ {version_name}: Certificate missing")
+                    has_issues = True
+            except:
+                self.print_warn(f"    ✗ {version_name}: Failed to check keystore")
+                has_issues = True
+
+        return has_issues
+
     def check_dbeaver_status(self, temp_warp_cert):
         """Check DBeaver configuration status."""
         has_issues = False
