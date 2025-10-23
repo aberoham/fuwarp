@@ -1533,6 +1533,63 @@ class FuwarpWindows:
                 self.print_warn(
                     f"Git http.sslCAInfo points to non-existent file: {current_ca_info}"
                 )
+
+                # Try to create the missing file and directory structure.
+                if not self.is_install_mode():
+                    self.print_action(
+                        f"Would create missing Git CA bundle at {current_ca_info}"
+                    )
+                    self.print_action(
+                        f"Would create directory structure for {os.path.dirname(current_ca_info)}"
+                    )
+                else:
+                    try:
+                        # Create the directory structure
+                        os.makedirs(os.path.dirname(current_ca_info), exist_ok=True)
+                        self.print_info(
+                            f"Created directory structure for {current_ca_info}"
+                        )
+
+                        # Get system certificates
+                        system_certs = self.get_system_ca_bundle()
+                        if system_certs:
+                            with open(current_ca_info, "w") as f:
+                                f.write(system_certs)
+                        else:
+                            # Create empty file if no system certs available
+                            Path(current_ca_info).touch()
+
+                        # Append Cloudflare certificate (with duplicate detection)
+                        self.append_certificate_if_missing(CERT_PATH, current_ca_info)
+
+                        self.print_info(
+                            f"Created Git CA bundle with Cloudflare certificate at {current_ca_info}"
+                        )
+
+                    except Exception as e:
+                        self.print_error(f"Failed to create Git CA bundle: {e}")
+                        self.print_info("Falling back to creating new bundle...")
+
+                        # Fallback: Use consistent bundle management
+                        bundle_path = self.setup_consistent_bundle("git")
+                        if bundle_path and self.is_install_mode():
+                            # Configure git to use the new bundle
+                            result = subprocess.run(
+                                [
+                                    "git",
+                                    "config",
+                                    "--global",
+                                    "http.sslCAInfo",
+                                    bundle_path,
+                                ],
+                                capture_output=True,
+                            )
+                            if result.returncode == 0:
+                                self.print_info(
+                                    f"Git reconfigured to use CA bundle: {bundle_path}"
+                                )
+                            else:
+                                self.print_error("Failed to reconfigure Git")
         else:
             # No custom CA configured - try Windows certificate store first (recommended)
             self.print_info("Git uses Windows certificate store by default")

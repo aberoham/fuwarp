@@ -56,7 +56,7 @@ python fuwarp-windows.py --help
 - `-h, --help` - Show help message and exit
 - `--fix` - Actually make changes (default is status check only)
 - `--tools, --tool TOOLS` - Specific tools to check/fix (can be specified multiple times)
-  - Examples: `--tools node --tools python` or `--tools node-npm,gcloud`
+  - Examples: `--tools node --tools python` or `--tools node,gcloud`
 - `--list-tools` - List all available tools and their tags
 - `--debug, --verbose` - Show detailed debug information
 - `--version` - Show program's version number and exit
