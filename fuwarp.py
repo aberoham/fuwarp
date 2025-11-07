@@ -563,20 +563,37 @@ class FuwarpPython:
         """Check if a certificate already exists in a file (thorough check for install mode)."""
         if not os.path.exists(target_file):
             return False
-        
+
         # In status mode, use the fast check
         if not self.is_install_mode():
             return self.certificate_likely_exists_in_file(cert_file, target_file)
-        
+
+        # Quick heuristics to avoid expensive parsing on system bundles
+        try:
+            file_size = os.path.getsize(target_file)
+
+            # If file is large (>200KB), likely a system bundle
+            if file_size > 200 * 1024:
+                self.print_debug(f"{target_file} is large ({file_size} bytes), using fast check")
+                return self.certificate_likely_exists_in_file(cert_file, target_file)
+        except Exception as e:
+            self.print_debug(f"Error checking file size: {e}")
+
         # Get cached fingerprint
         cert_fingerprint = self.get_cert_fingerprint(cert_file)
         if not cert_fingerprint:
             return False
-        
-        # For install mode, do the thorough check
+
+        # For custom/small bundles, do the thorough check
         try:
             with open(target_file, 'r') as f:
                 content = f.read()
+
+            # Quick count check before expensive parsing
+            cert_count = content.count('-----BEGIN CERTIFICATE-----')
+            if cert_count >= 50:
+                self.print_debug(f"{target_file} has {cert_count} certs, using fast check")
+                return self.certificate_likely_exists_in_file(cert_file, target_file)
                 
             # Split content into certificates
             certs = []
