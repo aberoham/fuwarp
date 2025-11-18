@@ -104,7 +104,8 @@ Something amiss or not quite right? Please post the full output of a run to an i
 - **Podman**: installs certificate in Podman VM's trust store
 - **Rancher Desktop**: installs certificate in Rancher VM's trust store
 - **Android Emulator**: helps install certificate on running Android emulators
-
+- **Gradle**: sets `systemProp` entries in `gradle.properties` (respecting `GRADLE_USER_HOME`) for the WARP certificate.
+ 
 ### Windows
 - **Node.js/npm**: configures `NODE_EXTRA_CA_CERTS` for Node.js and the cafile setting for npm
 - **Python**: sets the `REQUESTS_CA_BUNDLE`, `SSL_CERT_FILE`, and `CURL_CA_BUNDLE` environment variables

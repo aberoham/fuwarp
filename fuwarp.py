@@ -175,6 +175,20 @@ class FuwarpPython:
                 'check_func': self.check_java_status,
                 'description': 'Java runtime and development kit'
             },
+            'jenv': {
+                'name': 'jenv (Java Environment Manager)',
+                'tags': ['jenv', 'java', 'jvm', 'jdk'],
+                'setup_func': self.setup_jenv_cert,
+                'check_func': self.check_jenv_status,
+                'description': 'jenv-managed Java installations'
+            },
+            'gradle': {
+                'name': 'Gradle',
+                'tags': ['gradle'],
+                'setup_func': self.setup_gradle_cert,
+                'check_func': self.check_gradle_status,
+                'description': 'Gradle build tool'
+            },
             'dbeaver': {
                 'name': 'DBeaver',
                 'tags': ['dbeaver', 'database', 'db'],
@@ -394,6 +408,101 @@ class FuwarpPython:
             except Exception as e:
                 self.print_debug(f"Error getting fingerprint: {e}")
         return ""
+
+    def find_java_home(self):
+        """Locate JAVA_HOME using environment and command fallbacks."""
+        java_home = os.environ.get('JAVA_HOME', '')
+        if not java_home and self.command_exists('java'):
+            try:
+                if platform.system() == 'Darwin' and os.path.exists('/usr/libexec/java_home'):
+                    result = subprocess.run(['/usr/libexec/java_home'], capture_output=True, text=True)
+                    if result.returncode == 0:
+                        java_home = result.stdout.strip()
+
+                if not java_home:
+                    result = subprocess.run(
+                        ['java', '-XshowSettings:properties', '-version'],
+                        capture_output=True, text=True, stderr=subprocess.STDOUT
+                    )
+                    for line in result.stdout.splitlines():
+                        if 'java.home' in line:
+                            java_home = line.split('=')[1].strip()
+                            break
+            except Exception as e:
+                self.print_debug(f"Error finding JAVA_HOME: {e}")
+        return java_home
+
+    def find_java_cacerts(self, java_home=None):
+        """Locate Java cacerts file."""
+        if java_home is None:
+            java_home = self.find_java_home()
+        if not java_home:
+            return ''
+        cacerts = os.path.join(java_home, 'lib/security/cacerts')
+        if not os.path.exists(cacerts):
+            cacerts = os.path.join(java_home, 'jre/lib/security/cacerts')
+        return cacerts if os.path.exists(cacerts) else ''
+
+    def get_gradle_properties_path(self):
+        """Get path to Gradle properties file respecting GRADLE_USER_HOME."""
+        gradle_home = os.environ.get('GRADLE_USER_HOME', os.path.expanduser('~/.gradle'))
+        return os.path.join(gradle_home, 'gradle.properties')
+
+    def read_properties_file(self, path):
+        """Read Java-style .properties file into a dict."""
+        props = {}
+        if os.path.exists(path):
+            with open(path, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if '=' in line and not line.startswith('#'):
+                        key, val = line.split('=', 1)
+                        props[key] = val
+        return props
+
+    def update_properties_file(self, path, props_to_set, desc="properties"):
+        """Update key/value pairs in a .properties file."""
+        existing_lines = []
+        if os.path.exists(path):
+            with open(path, 'r') as f:
+                existing_lines = f.readlines()
+
+        current_props = {}
+        for line in existing_lines:
+            line = line.strip()
+            if '=' in line and not line.startswith('#'):
+                key, val = line.split('=', 1)
+                current_props[key] = val
+
+        if all(current_props.get(k) == v for k, v in props_to_set.items()):
+            return False
+
+        self.print_info(f"Setting up {desc}...")
+
+        updated_lines = []
+        remaining = props_to_set.copy()
+        for line in existing_lines:
+            stripped = line.strip()
+            replaced = False
+            for key in list(remaining):
+                if stripped.startswith(key + '='):
+                    updated_lines.append(f"{key}={remaining.pop(key)}\n")
+                    replaced = True
+                    break
+            if not replaced:
+                updated_lines.append(line)
+
+        for key, value in remaining.items():
+            updated_lines.append(f"{key}={value}\n")
+
+        if not self.is_install_mode():
+            self.print_action(f"Would update {desc} at {path}")
+        else:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, 'w') as f:
+                f.writelines(updated_lines)
+            self.print_info(f"Updated {desc} at {path}")
+        return True
     
     def certificate_likely_exists_in_file(self, cert_file, target_file):
         """Fast certificate check using grep (for status mode)."""
@@ -1254,44 +1363,54 @@ class FuwarpPython:
                         self.print_warn("gcloud diagnostics timed out, skipping")
             else:
                 self.print_error("Failed to configure gcloud")
-    
+
+    def get_jenv_java_homes(self):
+        """Get unique Java home directories from jenv.
+
+        Returns:
+            list: List of unique physical JDK installation paths
+        """
+        if not self.command_exists('jenv'):
+            return []
+
+        try:
+            result = subprocess.run(
+                ['jenv', 'versions', '--verbose'],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+
+            if result.returncode != 0:
+                return []
+
+            java_homes = set()
+            for line in result.stdout.splitlines():
+                # Look for lines with --> which indicate symlink targets
+                if '-->' in line:
+                    # Extract path after -->
+                    path = line.split('-->')[1].strip()
+                    # Skip "system" entries that point to user home
+                    if path and not path.endswith(os.path.expanduser('~')):
+                        java_homes.add(path)
+
+            return sorted(list(java_homes))
+        except Exception as e:
+            self.print_debug(f"Error getting jenv Java homes: {e}")
+            return []
+
     def setup_java_cert(self):
         """Setup Java certificate."""
         if not self.command_exists('java') and not self.command_exists('keytool'):
             return
         
-        # Better error handling for finding JAVA_HOME
-        java_home = os.environ.get('JAVA_HOME', '')
-        if not java_home and self.command_exists('java'):
-            try:
-                # First try /usr/libexec/java_home on macOS
-                if platform.system() == 'Darwin' and os.path.exists('/usr/libexec/java_home'):
-                    result = subprocess.run(['/usr/libexec/java_home'], capture_output=True, text=True)
-                    if result.returncode == 0:
-                        java_home = result.stdout.strip()
-                
-                # Fallback to java -XshowSettings
-                if not java_home:
-                    result = subprocess.run(
-                        ['java', '-XshowSettings:properties', '-version'],
-                        capture_output=True, text=True, stderr=subprocess.STDOUT
-                    )
-                    for line in result.stdout.splitlines():
-                        if 'java.home' in line:
-                            java_home = line.split('=')[1].strip()
-                            break
-            except Exception as e:
-                self.print_debug(f"Error finding JAVA_HOME: {e}")
-
+        java_home = self.find_java_home()
         if not java_home:
             self.print_warn("Could not determine JAVA_HOME")
             return
-        
-        cacerts = os.path.join(java_home, "lib/security/cacerts")
-        if not os.path.exists(cacerts):
-            cacerts = os.path.join(java_home, "jre/lib/security/cacerts")
-        
-        if not os.path.exists(cacerts):
+
+        cacerts = self.find_java_cacerts(java_home)
+        if not cacerts:
             self.print_error("Could not find Java cacerts file")
             return
         
@@ -1323,7 +1442,87 @@ class FuwarpPython:
                 self.print_info("Certificate added to Java keystore successfully")
             else:
                 self.print_warn("Failed to add certificate to Java keystore (may require sudo)")
-    
+
+    def setup_jenv_cert(self):
+        """Setup Java certificates for all jenv-managed Java installations."""
+        java_homes = self.get_jenv_java_homes()
+
+        if not java_homes:
+            return
+
+        if not self.command_exists('keytool'):
+            self.print_warn("keytool not found, cannot configure jenv Java installations")
+            return
+
+        self.print_info(f"Found {len(java_homes)} jenv-managed Java installation(s)")
+
+        for java_home in java_homes:
+            # Extract version from path for display
+            version_name = os.path.basename(java_home)
+            if 'Contents/Home' in java_home:
+                # macOS .jdk format: /Library/Java/JavaVirtualMachines/temurin-17.jdk/Contents/Home
+                version_name = os.path.basename(os.path.dirname(os.path.dirname(java_home)))
+                version_name = version_name.replace('.jdk', '')
+
+            cacerts = os.path.join(java_home, "lib/security/cacerts")
+            if not os.path.exists(cacerts):
+                cacerts = os.path.join(java_home, "jre/lib/security/cacerts")
+
+            if not os.path.exists(cacerts):
+                self.print_warn(f"  Skipping {version_name}: cacerts file not found at {cacerts}")
+                continue
+
+            # Check if certificate already exists
+            try:
+                result = subprocess.run(
+                    ['keytool', '-list', '-alias', 'cloudflare-zerotrust',
+                     '-keystore', cacerts, '-storepass', 'changeit'],
+                    capture_output=True
+                )
+                if result.returncode == 0 and 'cloudflare-zerotrust' in result.stdout.decode():
+                    # Certificate already exists
+                    self.print_info(f"  ✓ {version_name}: Certificate already installed")
+                    continue
+            except:
+                pass
+
+            self.print_info(f"  Installing certificate for {version_name}...")
+
+            if not self.is_install_mode():
+                self.print_action(f"    Would import certificate to: {cacerts}")
+            else:
+                result = subprocess.run(
+                    ['keytool', '-import', '-trustcacerts', '-alias', 'cloudflare-zerotrust',
+                     '-file', CERT_PATH, '-keystore', cacerts, '-storepass', 'changeit', '-noprompt'],
+                    capture_output=True,
+                    text=True
+                )
+                if result.returncode == 0:
+                    self.print_info(f"    ✓ {version_name}: Certificate added successfully")
+                else:
+                    self.print_warn(f"    ✗ {version_name}: Failed to add certificate (may require sudo)")
+                    if len(result.stdout) > 0:
+                        self.print_warn(f"      Keytool response: {result.stdout}")
+    def setup_gradle_cert(self):
+        """Setup Gradle certificate configuration."""
+        gradle_props = self.get_gradle_properties_path()
+
+        if not self.command_exists('gradle') and not os.path.exists(gradle_props):
+            return
+
+        cacerts = self.find_java_cacerts()
+        if not cacerts:
+            self.print_error("Could not find Java cacerts file for Gradle")
+            return
+
+        props_to_set = {
+            'systemProp.javax.net.ssl.trustStore': cacerts,
+            'systemProp.javax.net.ssl.trustStorePassword': 'changeit',
+            'systemProp.https.protocols': 'TLSv1.2'
+        }
+
+        self.update_properties_file(gradle_props, props_to_set, "Gradle properties")
+
     def setup_dbeaver_cert(self):
         """Setup DBeaver certificate."""
         dbeaver_keytool = "/Applications/DBeaver.app/Contents/Eclipse/jre/Contents/Home/bin/keytool"
@@ -1368,6 +1567,8 @@ class FuwarpPython:
                 self.print_info("Certificate added to DBeaver keystore successfully")
             else:
                 self.print_warn("Failed to add certificate to DBeaver keystore (may require sudo)")
+                if len(result.stdout) > 0:
+                    self.print_warn(f"Keytool response: {result.stdout.decode('utf-8')}")
                 self.print_warn("You may need to run: sudo ./fuwarp.py --fix")
     
     def setup_wget_cert(self):
@@ -1499,14 +1700,14 @@ class FuwarpPython:
                 cert_content = f.read()
             
             result = subprocess.run(
-                ['rdctl', 'shell', 'sudo tee /usr/local/share/ca-certificates/cloudflare-warp.pem'],
+                ['rdctl', 'shell', 'sudo', 'tee', '/usr/local/share/ca-certificates/cloudflare-warp.pem'],
                 input=cert_content, text=True, capture_output=True
             )
             
             if result.returncode == 0:
                 # Update CA certificates
                 result = subprocess.run(
-                    ['rdctl', 'shell', 'sudo update-ca-certificates'],
+                    ['rdctl', 'shell', 'sudo', 'update-ca-certificates'],
                     capture_output=True
                 )
                 if result.returncode == 0:
@@ -1969,6 +2170,80 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
             self.print_info("  - Java not installed (would configure if present)")
         return has_issues
 
+    def check_jenv_status(self, temp_warp_cert):
+        """Check jenv-managed Java installations status."""
+        has_issues = False
+        java_homes = self.get_jenv_java_homes()
+
+        if not java_homes:
+            return has_issues
+
+        if not self.command_exists('keytool'):
+            self.print_warn("  ✗ keytool not found, cannot check jenv Java installations")
+            return True
+
+        self.print_info(f"  Checking {len(java_homes)} jenv-managed Java installation(s):")
+
+        for java_home in java_homes:
+            # Extract version from path for display
+            version_name = os.path.basename(java_home)
+            if 'Contents/Home' in java_home:
+                version_name = os.path.basename(os.path.dirname(os.path.dirname(java_home)))
+                version_name = version_name.replace('.jdk', '')
+
+            cacerts = os.path.join(java_home, "lib/security/cacerts")
+            if not os.path.exists(cacerts):
+                cacerts = os.path.join(java_home, "jre/lib/security/cacerts")
+
+            if not os.path.exists(cacerts):
+                self.print_warn(f"    ✗ {version_name}: cacerts file not found")
+                has_issues = True
+                continue
+
+            # Check if certificate exists
+            try:
+                result = subprocess.run(
+                    ['keytool', '-list', '-alias', 'cloudflare-zerotrust',
+                     '-keystore', cacerts, '-storepass', 'changeit'],
+                    capture_output=True
+                )
+                if result.returncode == 0 and 'cloudflare-zerotrust' in result.stdout.decode():
+                    self.print_info(f"    ✓ {version_name}: Certificate installed")
+                else:
+                    self.print_warn(f"    ✗ {version_name}: Certificate missing")
+                    has_issues = True
+            except:
+                self.print_warn(f"    ✗ {version_name}: Failed to check keystore")
+                has_issues = True
+
+    def check_gradle_status(self, temp_warp_cert):
+        """Check Gradle configuration status."""
+        has_issues = False
+        gradle_props = self.get_gradle_properties_path()
+        if self.command_exists('gradle') or os.path.exists(gradle_props):
+            if os.path.exists(gradle_props):
+                current_props = self.read_properties_file(gradle_props)
+                cacerts = self.find_java_cacerts()
+                expected = {
+                    'systemProp.javax.net.ssl.trustStore': cacerts,
+                    'systemProp.javax.net.ssl.trustStorePassword': 'changeit',
+                    'systemProp.https.protocols': 'TLSv1.2'
+                }
+
+                for key, value in expected.items():
+                    current = current_props.get(key, '')
+                    if current == value and current:
+                        self.print_info(f"  ✓ {key} set correctly in Gradle properties")
+                    else:
+                        self.print_warn(f"  ✗ {key} not set correctly in Gradle properties")
+                        has_issues = True
+            else:
+                self.print_warn("  ✗ Gradle properties file not found")
+                has_issues = True
+        else:
+            self.print_info("  - Gradle not installed (would configure if present)")
+        return has_issues
+
     def check_dbeaver_status(self, temp_warp_cert):
         """Check DBeaver configuration status."""
         has_issues = False
@@ -2059,7 +2334,7 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
                 if 'rdctl' in result.stdout:
                     # Check if certificate exists in Rancher VM
                     result = subprocess.run(
-                        ['rdctl', 'shell', 'test -f /usr/local/share/ca-certificates/cloudflare-warp.pem'],
+                        ['rdctl', 'shell', 'test', '-f', '/usr/local/share/ca-certificates/cloudflare-warp.pem'],
                         capture_output=True
                     )
                     if result.returncode == 0:
