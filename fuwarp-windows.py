@@ -127,7 +127,7 @@ NC = "\033[0m"  # No Color
 
 # Certificate details
 # Base directory for tool-specific certificate bundles
-CLOUDFLARE_WARP_DIR = os.path.expanduser("~/.cloudflare-warp")
+CLOUDFLARE_WARP_DIR = os.path.join(os.path.expanduser("~"), ".cloudflare-warp")
 CERT_PATH = os.path.join(CLOUDFLARE_WARP_DIR, "THG-CloudflareCert.pem")
 # No alternative certificate file names - we generate our own specific cert
 ALT_CERT_NAMES = []
@@ -409,14 +409,16 @@ class FuwarpWindows:
 
     def get_tool_bundle_path(self, tool_name):
         """Get the standardized bundle path for a tool."""
-        return os.path.join(CLOUDFLARE_WARP_DIR, tool_name, "ca-bundle.pem")
+        # Use os.path.join consistently and normalize the result
+        path = os.path.join(CLOUDFLARE_WARP_DIR, tool_name, "ca-bundle.pem")
+        return os.path.normpath(path)
 
     def find_existing_bundle(self, tool_name):
         """Find existing certificate bundle for a tool in various locations."""
         # Tool-specific locations to check
         locations = {
             "python": [
-                os.path.expanduser("~/.python-ca-bundle.pem"),
+                os.path.join(os.path.expanduser("~"), ".python-ca-bundle.pem"),
                 self.get_environment_variable("REQUESTS_CA_BUNDLE"),
                 self.get_environment_variable("SSL_CERT_FILE"),
             ],
@@ -431,7 +433,8 @@ class FuwarpWindows:
         # Check tool-specific locations
         for location in locations.get(tool_name, []):
             if location and os.path.exists(location):
-                return location
+                # Normalize the path before returning
+                return os.path.normpath(location)
 
         return None
 
@@ -465,9 +468,16 @@ class FuwarpWindows:
                     # Create directory
                     os.makedirs(os.path.dirname(bundle_path), exist_ok=True)
 
-                    # Copy existing bundle
-                    shutil.copy(existing_bundle, bundle_path)
-                    self.print_info(f"Copied existing bundle to {bundle_path}")
+                    # Normalize paths for comparison
+                    existing_bundle_normalized = os.path.normpath(os.path.abspath(existing_bundle))
+                    bundle_path_normalized = os.path.normpath(os.path.abspath(bundle_path))
+
+                    # Copy existing bundle (only if it's not already at the target location)
+                    if existing_bundle_normalized != bundle_path_normalized:
+                        shutil.copy(existing_bundle, bundle_path)
+                        self.print_info(f"Copied existing bundle to {bundle_path}")
+                    else:
+                        self.print_info(f"Using existing bundle at {bundle_path}")
 
                     # Check if the copied bundle already contains the certificate
                     if not self.certificate_exists_in_file(CERT_PATH, bundle_path):
@@ -567,6 +577,15 @@ class FuwarpWindows:
 
     def append_certificate_if_missing(self, cert_file, target_file):
         """Append certificate to target file only if it doesn't already exist."""
+        # Normalize paths for comparison
+        cert_file_normalized = os.path.normpath(os.path.abspath(cert_file))
+        target_file_normalized = os.path.normpath(os.path.abspath(target_file))
+
+        # Ensure we're not trying to append a file to itself
+        if cert_file_normalized == target_file_normalized:
+            self.print_debug(f"Skipping append: source and target are the same file ({cert_file})")
+            return True
+
         if self.certificate_exists_in_file(cert_file, target_file):
             self.print_debug(
                 f"Certificate already exists in {target_file}, skipping append"
@@ -1244,8 +1263,8 @@ class FuwarpWindows:
 
         # Find cacerts file
         cacerts_paths = [
-            os.path.join(java_home, "lib/security/cacerts"),
-            os.path.join(java_home, "jre/lib/security/cacerts"),
+            os.path.join(java_home, "lib", "security", "cacerts"),
+            os.path.join(java_home, "jre", "lib", "security", "cacerts"),
         ]
 
         cacerts = None
@@ -1320,7 +1339,7 @@ class FuwarpWindows:
         if not self.command_exists("wget"):
             return
 
-        wgetrc_path = os.path.expanduser("~/.wgetrc")
+        wgetrc_path = os.path.join(os.path.expanduser("~"), ".wgetrc")
         config_line = f"ca_certificate={CERT_PATH}"
 
         if os.path.exists(wgetrc_path):
@@ -2083,7 +2102,7 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
         """Check wget configuration status."""
         has_issues = False
         if self.command_exists("wget"):
-            wgetrc_path = os.path.expanduser("~/.wgetrc")
+            wgetrc_path = os.path.join(os.path.expanduser("~"), ".wgetrc")
             if os.path.exists(wgetrc_path):
                 with open(wgetrc_path, "r") as f:
                     content = f.read()
