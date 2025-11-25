@@ -11,6 +11,7 @@ on:
     paths:
       - 'fuwarp-windows.py'
       - '.github/workflows/windows-test.yml'
+  workflow_dispatch:  # Allow manual triggering if needed
 
 jobs:
   test-windows:
