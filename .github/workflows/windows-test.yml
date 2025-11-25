@@ -46,22 +46,31 @@ jobs:
     - name: Test script imports and basic functionality
       shell: pwsh
       run: |
-        python -c "import sys; sys.path.insert(0, '.'); from fuwarp_windows import FuwarpWindows; print('Import successful')"
+        # Set UTF-8 encoding for Python to handle Unicode characters
+        $env:PYTHONIOENCODING = "utf-8"
+
+        # Test direct script execution (not as a module import)
         python fuwarp-windows.py --help
         python fuwarp-windows.py --version
 
     - name: Test in status mode (read-only)
       shell: pwsh
-      run: python fuwarp-windows.py
+      run: |
+        # Set UTF-8 encoding for Python to handle Unicode characters
+        $env:PYTHONIOENCODING = "utf-8"
+        python fuwarp-windows.py
 
     - name: Test path construction
       shell: pwsh
       run: |
+        # Set UTF-8 encoding for Python
+        $env:PYTHONIOENCODING = "utf-8"
+
         python -c @"
         import os
         import sys
-        sys.path.insert(0, '.')
-        from fuwarp_windows import FuwarpWindows
+        # Import the module by executing the file directly to get the class
+        exec(open('fuwarp-windows.py').read(), globals())  # This loads FuwarpWindows class
 
         # Test that paths are properly constructed for Windows
         fw = FuwarpWindows(mode='status', debug=True)
@@ -76,8 +85,8 @@ jobs:
             assert '/' not in path_after_drive, f'Mixed separators found: {path}'
 
         # Test that CLOUDFLARE_WARP_DIR uses proper separators
-        import fuwarp_windows
-        warp_dir = fuwarp_windows.CLOUDFLARE_WARP_DIR
+        # CLOUDFLARE_WARP_DIR is a global variable that was loaded
+        warp_dir = CLOUDFLARE_WARP_DIR
         print(f'WARP dir: {warp_dir}')
 
         if ':' in warp_dir:
@@ -90,10 +99,13 @@ jobs:
     - name: Test certificate download with mock
       shell: pwsh
       run: |
+        # Set UTF-8 encoding for Python
+        $env:PYTHONIOENCODING = "utf-8"
+
         python -c @"
         import sys
-        sys.path.insert(0, '.')
-        from fuwarp_windows import FuwarpWindows
+        # Import the module by executing the file directly
+        exec(open('fuwarp-windows.py').read(), globals())
 
         fw = FuwarpWindows(mode='status', debug=True)
         result = fw.download_certificate()
@@ -104,13 +116,16 @@ jobs:
     - name: Test specific bug fix - same file copy protection
       shell: pwsh
       run: |
+        # Set UTF-8 encoding for Python
+        $env:PYTHONIOENCODING = "utf-8"
+
         # Test that we don't try to copy a file to itself
         python -c @"
         import os
         import sys
         import tempfile
-        sys.path.insert(0, '.')
-        from fuwarp_windows import FuwarpWindows
+        # Import the module by executing the file directly
+        exec(open('fuwarp-windows.py').read(), globals())
 
         fw = FuwarpWindows(mode='status', debug=True)
 
