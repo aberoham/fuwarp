@@ -131,6 +131,9 @@ NC = '\033[0m'  # No Color
 
 # Certificate details
 CERT_PATH = os.path.expanduser("~/.cloudflare-ca.pem")
+# Heuristics for detecting misconfigured bundles that replace trust stores
+SMALL_BUNDLE_MAX_CERTS = 2
+SMALL_BUNDLE_MAX_SIZE_BYTES = 50 * 1024  # 50KB
 SHELL_MODIFIED = False
 CERT_FINGERPRINT = ""  # Cache for certificate fingerprint
 
@@ -230,6 +233,13 @@ class FuwarpPython:
                 'setup_func': self.setup_colima_cert,
                 'check_func': self.check_colima_status,
                 'description': 'Colima Docker runtime'
+            },
+            'git': {
+                'name': 'Git',
+                'tags': ['git'],
+                'setup_func': self.setup_git_cert,
+                'check_func': self.check_git_status,
+                'description': 'Git version control'
             }
         }
         
@@ -611,7 +621,83 @@ class FuwarpPython:
             self.print_debug(f"Error checking certificate existence: {e}")
         
         return False
-    
+
+    def count_certificates_in_file(self, path):
+        """Count the number of PEM certificates in a file."""
+        try:
+            if not os.path.exists(path):
+                return 0
+            count = 0
+            with open(path, 'r') as f:
+                for line in f:
+                    if '-----BEGIN CERTIFICATE-----' in line:
+                        count += 1
+            return count
+        except Exception as e:
+            self.print_debug(f"Error counting certificates in {path}: {e}")
+            return 0
+
+    def files_are_identical(self, path_a, path_b):
+        """Return True if two files have identical content."""
+        try:
+            if not (os.path.exists(path_a) and os.path.exists(path_b)):
+                return False
+            with open(path_a, 'r') as fa, open(path_b, 'r') as fb:
+                return fa.read() == fb.read()
+        except Exception as e:
+            self.print_debug(f"Error comparing files {path_a} and {path_b}: {e}")
+            return False
+
+    def is_suspicious_full_bundle(self, bundle_path, warp_cert_path=None):
+        """Detect bundles that likely contain only WARP CA or are too small to be full.
+
+        Returns (is_suspicious: bool, reason: str)
+        """
+        try:
+            if not os.path.exists(bundle_path):
+                return (False, "")
+            size = 0
+            try:
+                size = os.path.getsize(bundle_path)
+            except Exception:
+                # Fallback: approximate by length of content
+                try:
+                    with open(bundle_path, 'r') as f:
+                        size = len(f.read().encode('utf-8'))
+                except Exception:
+                    size = 0
+
+            cert_count = self.count_certificates_in_file(bundle_path)
+            # Debug one-liner summary
+            if self.is_debug_mode():
+                self.print_debug(f"Bundle stats for {bundle_path}: {cert_count} cert(s), size={size}B")
+
+            # Obvious misconfig: just a single certificate
+            if cert_count <= 1:
+                return (True, f"contains {cert_count} certificate(s), size={size}B")
+
+            # Small count and small file size heuristics
+            if cert_count <= SMALL_BUNDLE_MAX_CERTS and size <= SMALL_BUNDLE_MAX_SIZE_BYTES:
+                return (True, f"contains {cert_count} certificates and is only {size}B")
+
+            # If we have a reference WARP cert, exact-equality to it is suspicious
+            if warp_cert_path and self.files_are_identical(bundle_path, warp_cert_path):
+                return (True, "bundle is identical to the WARP certificate file")
+
+            return (False, "")
+        except Exception as e:
+            self.print_debug(f"Error checking suspicious bundle {bundle_path}: {e}")
+            return (False, "")
+
+    def get_bundle_stats(self, path):
+        """Return (cert_count, size_bytes) for a certificate bundle path."""
+        try:
+            count = self.count_certificates_in_file(path)
+            size = os.path.getsize(path) if os.path.exists(path) else 0
+            return count, size
+        except Exception:
+            return 0, 0
+
     def add_to_shell_config(self, var_name, var_value, shell_config):
         """Add export to shell config."""
         # Check if the export already exists
@@ -1029,13 +1115,37 @@ class FuwarpPython:
         
         if current_cafile and current_cafile not in ["null", "undefined"]:
             if os.path.exists(current_cafile):
+                # First check if the existing cafile looks suspiciously small
+                suspicious, reason = self.is_suspicious_full_bundle(current_cafile, CERT_PATH)
+                if suspicious:
+                    self.print_info("Configuring npm certificate...")
+                    self.print_warn(f"Existing npm cafile looks suspiciously small ({reason})")
+                    if not self.is_install_mode():
+                        self.print_action(f"Would create full CA bundle at {npm_bundle}")
+                        self.print_action(f"Would run: npm config set cafile {npm_bundle}")
+                    else:
+                        os.makedirs(os.path.dirname(npm_bundle), exist_ok=True)
+                        if os.path.exists("/etc/ssl/cert.pem"):
+                            shutil.copy("/etc/ssl/cert.pem", npm_bundle)
+                        elif os.path.exists("/etc/ssl/certs/ca-certificates.crt"):
+                            shutil.copy("/etc/ssl/certs/ca-certificates.crt", npm_bundle)
+                        else:
+                            Path(npm_bundle).touch()
+                        if not self.certificate_exists_in_file(CERT_PATH, npm_bundle):
+                            with open(npm_bundle, 'a') as f:
+                                with open(CERT_PATH, 'r') as cf:
+                                    f.write(cf.read())
+                        subprocess.run(['npm', 'config', 'set', 'cafile', npm_bundle])
+                        self.print_info(f"Repointed npm cafile to managed bundle: {npm_bundle}")
+                    return
+
                 # Check if the file contains our certificate
                 with open(CERT_PATH, 'r') as f:
                     cert_content = f.read()
-                
+
                 with open(current_cafile, 'r') as f:
                     file_content = f.read()
-                
+
                 if cert_content not in file_content:
                     needs_setup = True
                     self.print_info("Configuring npm certificate...")
@@ -1204,18 +1314,45 @@ class FuwarpPython:
                             self.add_to_shell_config("CURL_CA_BUNDLE", new_path, shell_config)
                             self.print_info(f"Created new certificate bundle at {new_path}")
                 else:
+                    # Check if the existing bundle looks suspicious (likely just WARP CA)
+                    suspicious, reason = self.is_suspicious_full_bundle(requests_ca_bundle, CERT_PATH)
+                    if suspicious:
+                        needs_setup = True
+                        self.print_info("Setting up Python certificate...")
+                        self.print_warn(f"REQUESTS_CA_BUNDLE looks suspiciously small ({reason})")
+                        if not self.is_install_mode():
+                            self.print_action(f"Would create full CA bundle at {python_bundle}")
+                            self.print_action(f"Would repoint REQUESTS_CA_BUNDLE to {python_bundle}")
+                        else:
+                            # Create proper bundle
+                            if os.path.exists("/etc/ssl/cert.pem"):
+                                shutil.copy("/etc/ssl/cert.pem", python_bundle)
+                            elif os.path.exists("/etc/ssl/certs/ca-certificates.crt"):
+                                shutil.copy("/etc/ssl/certs/ca-certificates.crt", python_bundle)
+                            else:
+                                Path(python_bundle).touch()
+                            if not self.certificate_exists_in_file(CERT_PATH, python_bundle):
+                                with open(python_bundle, 'a') as f:
+                                    with open(CERT_PATH, 'r') as cf:
+                                        f.write(cf.read())
+                            self.add_to_shell_config("REQUESTS_CA_BUNDLE", python_bundle, shell_config)
+                            self.add_to_shell_config("SSL_CERT_FILE", python_bundle, shell_config)
+                            self.add_to_shell_config("CURL_CA_BUNDLE", python_bundle, shell_config)
+                            self.print_info(f"Repointed REQUESTS_CA_BUNDLE to managed bundle: {python_bundle}")
+                        return
+
                     # Check if the file contains our certificate
                     with open(CERT_PATH, 'r') as f:
                         cert_content = f.read()
-                    
+
                     with open(requests_ca_bundle, 'r') as f:
                         file_content = f.read()
-                    
+
                     if cert_content not in file_content:
                         needs_setup = True
                         self.print_info("Setting up Python certificate...")
                         self.print_info(f"REQUESTS_CA_BUNDLE is already set to: {requests_ca_bundle}")
-                        
+
                         if not self.is_install_mode():
                             self.print_action(f"Would append Cloudflare certificate to {requests_ca_bundle}")
                         else:
@@ -1284,6 +1421,30 @@ class FuwarpPython:
         if not current_ca_file:
             needs_setup = True
         elif os.path.exists(current_ca_file):
+            # First check if the existing CA file looks suspiciously small
+            suspicious, reason = self.is_suspicious_full_bundle(current_ca_file, CERT_PATH)
+            if suspicious:
+                self.print_info("Configuring gcloud certificate...")
+                self.print_warn(f"Existing gcloud CA file looks suspiciously small ({reason})")
+                if not self.is_install_mode():
+                    self.print_action(f"Would create gcloud CA bundle at {gcloud_bundle}")
+                    self.print_action(f"Would run: gcloud config set core/custom_ca_certs_file {gcloud_bundle}")
+                else:
+                    os.makedirs(gcloud_cert_dir, exist_ok=True)
+                    if os.path.exists("/etc/ssl/cert.pem"):
+                        shutil.copy("/etc/ssl/cert.pem", gcloud_bundle)
+                    elif os.path.exists("/etc/ssl/certs/ca-certificates.crt"):
+                        shutil.copy("/etc/ssl/certs/ca-certificates.crt", gcloud_bundle)
+                    else:
+                        Path(gcloud_bundle).touch()
+                    if not self.certificate_exists_in_file(CERT_PATH, gcloud_bundle):
+                        with open(gcloud_bundle, 'a') as f:
+                            with open(CERT_PATH, 'r') as cf:
+                                f.write(cf.read())
+                    subprocess.run(['gcloud', 'config', 'set', 'core/custom_ca_certs_file', gcloud_bundle], capture_output=True, timeout=30)
+                    self.print_info(f"Repointed gcloud custom CA file to managed bundle: {gcloud_bundle}")
+                return
+
             # Check if current CA file contains our certificate
             with open(CERT_PATH, 'r') as f:
                 cert_content = f.read()
@@ -1293,10 +1454,10 @@ class FuwarpPython:
                 needs_setup = True
         else:
             needs_setup = True
-        
+
         if not needs_setup:
             return
-        
+
         self.print_info("Setting up gcloud certificate...")
         
         # Create directory if it doesn't exist
@@ -1363,6 +1524,111 @@ class FuwarpPython:
                         self.print_warn("gcloud diagnostics timed out, skipping")
             else:
                 self.print_error("Failed to configure gcloud")
+
+    def setup_git_cert(self):
+        """Setup Git sslCAInfo to a managed full bundle."""
+        if not self.command_exists('git'):
+            return
+        git_bundle = os.path.expanduser("~/.cloudflare-warp/git/ca-bundle.pem")
+        # Check current setting
+        try:
+            result = subprocess.run(['git', 'config', '--global', 'http.sslCAInfo'], capture_output=True, text=True)
+            current_ca = result.stdout.strip() if result.returncode == 0 else ""
+        except:
+            current_ca = ""
+        # Decide whether to repoint
+        repoint = False
+        if current_ca and os.path.exists(current_ca):
+            suspicious, reason = self.is_suspicious_full_bundle(current_ca, CERT_PATH)
+            if suspicious:
+                repoint = True
+                self.print_info("Configuring Git certificate...")
+                self.print_warn(f"Existing git http.sslCAInfo looks suspiciously small ({reason})")
+        else:
+            # If not set or path missing, don't configure by default
+            # Git uses system trust store when not configured
+            return
+        if not repoint:
+            return
+        if not self.is_install_mode():
+            self.print_action(f"Would create Git CA bundle at {git_bundle}")
+            self.print_action(f"Would run: git config --global http.sslCAInfo {git_bundle}")
+            return
+        # Build full bundle and configure
+        os.makedirs(os.path.dirname(git_bundle), exist_ok=True)
+        if os.path.exists("/etc/ssl/cert.pem"):
+            shutil.copy("/etc/ssl/cert.pem", git_bundle)
+        elif os.path.exists("/etc/ssl/certs/ca-certificates.crt"):
+            shutil.copy("/etc/ssl/certs/ca-certificates.crt", git_bundle)
+        else:
+            Path(git_bundle).touch()
+        if not self.certificate_exists_in_file(CERT_PATH, git_bundle):
+            with open(git_bundle, 'a') as f:
+                with open(CERT_PATH, 'r') as cf:
+                    f.write(cf.read())
+        subprocess.run(['git', 'config', '--global', 'http.sslCAInfo', git_bundle], capture_output=True, text=True)
+        self.print_info(f"Configured git http.sslCAInfo to: {git_bundle}")
+
+    def setup_curl_cert(self):
+        """Repoint CURL_CA_BUNDLE to a managed bundle if current setting is suspicious."""
+        if not self.command_exists('curl'):
+            return
+        curl_env = os.environ.get('CURL_CA_BUNDLE', '')
+        if not curl_env:
+            return
+        if not os.path.exists(curl_env):
+            return
+        suspicious, reason = self.is_suspicious_full_bundle(curl_env, CERT_PATH)
+        curl_bundle = os.path.expanduser("~/.cloudflare-warp/curl/ca-bundle.pem")
+        if suspicious:
+            self.print_info("Configuring curl certificate bundle...")
+            self.print_warn(f"Existing CURL_CA_BUNDLE looks suspiciously small ({reason})")
+            if not self.is_install_mode():
+                self.print_action(f"Would create curl CA bundle at {curl_bundle}")
+                self.print_action(f"Would repoint CURL_CA_BUNDLE to {curl_bundle}")
+                return
+            os.makedirs(os.path.dirname(curl_bundle), exist_ok=True)
+            if os.path.exists("/etc/ssl/cert.pem"):
+                shutil.copy("/etc/ssl/cert.pem", curl_bundle)
+            elif os.path.exists("/etc/ssl/certs/ca-certificates.crt"):
+                shutil.copy("/etc/ssl/certs/ca-certificates.crt", curl_bundle)
+            else:
+                Path(curl_bundle).touch()
+            if not self.certificate_exists_in_file(CERT_PATH, curl_bundle):
+                with open(curl_bundle, 'a') as f:
+                    with open(CERT_PATH, 'r') as cf:
+                        f.write(cf.read())
+            shell_type = self.detect_shell()
+            shell_config = self.get_shell_config(shell_type)
+            self.add_to_shell_config("CURL_CA_BUNDLE", curl_bundle, shell_config)
+            self.print_info(f"Repointed CURL_CA_BUNDLE to: {curl_bundle}")
+
+    def check_git_status(self, temp_warp_cert):
+        """Check Git configuration status for http.sslCAInfo."""
+        has_issues = False
+        if self.command_exists('git'):
+            try:
+                result = subprocess.run(['git', 'config', '--global', 'http.sslCAInfo'], capture_output=True, text=True)
+                git_ca = result.stdout.strip() if result.returncode == 0 else ""
+                if git_ca:
+                    self.print_info(f"  http.sslCAInfo is set to: {git_ca}")
+                    if os.path.exists(git_ca):
+                        suspicious, reason = self.is_suspicious_full_bundle(git_ca, None)
+                        if suspicious:
+                            self.print_warn(f"  ⚠ http.sslCAInfo looks suspiciously small ({reason})")
+                            self.print_action("    Run with --fix or use: git config --global http.sslCAInfo ~/.cloudflare-warp/git/ca-bundle.pem")
+                            has_issues = True
+                    else:
+                        self.print_warn(f"  ✗ http.sslCAInfo points to non-existent file: {git_ca}")
+                        has_issues = True
+                else:
+                    self.print_info("  - http.sslCAInfo not configured (uses system trust store)")
+            except:
+                self.print_warn("  ✗ Failed to check git configuration")
+                has_issues = True
+        else:
+            self.print_info("  - Git not installed")
+        return has_issues
 
     def get_jenv_java_homes(self):
         """Get unique Java home directories from jenv.
@@ -2056,6 +2322,11 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
                         if os.path.exists(npm_cafile):
                             if self.certificate_exists_in_file(temp_warp_cert, npm_cafile):
                                 self.print_info("  ✓ npm cafile contains current WARP certificate")
+                                suspicious, reason = self.is_suspicious_full_bundle(npm_cafile, None)
+                                if suspicious:
+                                    self.print_warn(f"  ⚠ npm cafile looks suspiciously small ({reason})")
+                                    self.print_action("    Run with --fix to repoint npm to a full CA bundle")
+                                    has_issues = True
                             else:
                                 self.print_warn("  ✗ npm cafile doesn't contain current WARP certificate")
                                 has_issues = True
@@ -2091,13 +2362,18 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
                     if os.path.exists(requests_ca_bundle):
                         if self.certificate_exists_in_file(temp_warp_cert, requests_ca_bundle):
                             self.print_info("  ✓ REQUESTS_CA_BUNDLE contains current WARP certificate")
+                            suspicious, reason = self.is_suspicious_full_bundle(requests_ca_bundle, None)
+                            if suspicious:
+                                self.print_warn(f"  ⚠ REQUESTS_CA_BUNDLE looks suspiciously small ({reason})")
+                                self.print_action("    Run with --fix to repoint to a full CA bundle")
+                                has_issues = True
                             python_configured = True
                         else:
                             self.print_warn("  ✗ REQUESTS_CA_BUNDLE file exists but doesn't contain current WARP certificate")
                             self.print_action("    Run with --fix to create a new bundle with both certificates")
                     else:
                         self.print_warn(f"  ✗ REQUESTS_CA_BUNDLE points to non-existent file: {requests_ca_bundle}")
-                
+
                 # Also check SSL_CERT_FILE if set
                 ssl_cert_file = os.environ.get('SSL_CERT_FILE', '')
                 if ssl_cert_file:
@@ -2105,6 +2381,11 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
                     if os.path.exists(ssl_cert_file):
                         if self.certificate_exists_in_file(temp_warp_cert, ssl_cert_file):
                             self.print_info("  ✓ SSL_CERT_FILE contains current WARP certificate")
+                            suspicious, reason = self.is_suspicious_full_bundle(ssl_cert_file, None)
+                            if suspicious:
+                                self.print_warn(f"  ⚠ SSL_CERT_FILE looks suspiciously small ({reason})")
+                                self.print_action("    Run with --fix to repoint to a full CA bundle")
+                                has_issues = True
                             python_configured = True
                 
                 if not python_configured:
@@ -2132,6 +2413,11 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
                 if gcloud_ca and os.path.exists(gcloud_ca):
                     if self.certificate_exists_in_file(temp_warp_cert, gcloud_ca):
                         self.print_info("  ✓ gcloud configured with current WARP certificate")
+                        suspicious, reason = self.is_suspicious_full_bundle(gcloud_ca, None)
+                        if suspicious:
+                            self.print_warn(f"  ⚠ gcloud custom CA file looks suspiciously small ({reason})")
+                            self.print_action("    Run with --fix to repoint to a full CA bundle")
+                            has_issues = True
                     else:
                         self.print_warn("  ✗ gcloud CA file doesn't contain current WARP certificate")
                         has_issues = True
