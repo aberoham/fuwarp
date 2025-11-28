@@ -698,6 +698,64 @@ class FuwarpPython:
         except Exception:
             return 0, 0
 
+    def safe_append_certificate(self, cert_file, target_file):
+        """Safely append a certificate to a target file, ensuring proper PEM formatting.
+
+        This method handles the case where the target file doesn't end with a newline,
+        which would otherwise produce malformed PEM like:
+        -----END CERTIFICATE----------BEGIN CERTIFICATE-----
+
+        Args:
+            cert_file: Path to the certificate file to append
+            target_file: Path to the target bundle file
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        if not os.path.exists(cert_file):
+            self.print_error(f"Certificate file not found: {cert_file}")
+            return False
+
+        # Check if certificate already exists in target
+        if self.certificate_exists_in_file(cert_file, target_file):
+            self.print_debug(f"Certificate already exists in {target_file}, skipping append")
+            return True
+
+        try:
+            # Read certificate content
+            with open(cert_file, 'r') as cf:
+                cert_content = cf.read()
+
+            # Ensure certificate content ends with newline
+            if not cert_content.endswith('\n'):
+                cert_content = cert_content + '\n'
+
+            # Check if target file exists and whether it ends with a newline
+            needs_leading_newline = False
+            if os.path.exists(target_file):
+                with open(target_file, 'rb') as tf:
+                    # Seek to end and read last byte
+                    tf.seek(0, 2)  # Seek to end
+                    if tf.tell() > 0:  # File is not empty
+                        tf.seek(-1, 2)  # Seek to last byte
+                        last_byte = tf.read(1)
+                        # Check for newline (LF) or carriage return (CR for CRLF)
+                        if last_byte not in (b'\n', b'\r'):
+                            needs_leading_newline = True
+
+            # Append certificate with proper formatting
+            with open(target_file, 'a') as f:
+                if needs_leading_newline:
+                    f.write('\n')
+                f.write(cert_content)
+
+            self.print_info(f"Appended certificate to {target_file}")
+            return True
+
+        except Exception as e:
+            self.print_error(f"Failed to append certificate to {target_file}: {e}")
+            return False
+
     def add_to_shell_config(self, var_name, var_value, shell_config):
         """Add export to shell config."""
         # Check if the export already exists
@@ -1051,10 +1109,8 @@ class FuwarpPython:
                                     except:
                                         Path(new_path).touch()
                                 
-                                if not self.certificate_exists_in_file(CERT_PATH, new_path):
-                                    with open(new_path, 'a') as f:
-                                        f.write(cert_content)
-                                
+                                self.safe_append_certificate(CERT_PATH, new_path)
+
                                 self.add_to_shell_config("NODE_EXTRA_CA_CERTS", new_path, shell_config)
                                 self.print_info(f"Created new certificate bundle at {new_path}")
                     else:
@@ -1062,11 +1118,7 @@ class FuwarpPython:
                             self.print_action(f"Would append Cloudflare certificate to {node_extra_ca_certs}")
                         else:
                             self.print_info(f"Appending Cloudflare certificate to {node_extra_ca_certs}")
-                            if not self.certificate_exists_in_file(CERT_PATH, node_extra_ca_certs):
-                                with open(node_extra_ca_certs, 'a') as f:
-                                    f.write(cert_content)
-                            else:
-                                self.print_info(f"Certificate already exists in {node_extra_ca_certs}")
+                            self.safe_append_certificate(CERT_PATH, node_extra_ca_certs)
             else:
                 needs_setup = True
                 self.print_info("Setting up Node.js certificate...")
@@ -1174,11 +1226,9 @@ class FuwarpPython:
                                 else:
                                     Path(npm_bundle).touch()
                             
-                            # Check if certificate already exists in bundle
-                            if not self.certificate_exists_in_file(CERT_PATH, npm_bundle):
-                                with open(npm_bundle, 'a') as f:
-                                    f.write(cert_content)
-                            
+                            # Append certificate to bundle
+                            self.safe_append_certificate(CERT_PATH, npm_bundle)
+
                             subprocess.run(['npm', 'config', 'set', 'cafile', npm_bundle])
                             self.print_info(f"Created new npm cafile at {npm_bundle}")
                     else:
@@ -1188,11 +1238,7 @@ class FuwarpPython:
                             response = input("Do you want to append it to the existing cafile? (y/N) ")
                             if response.lower() == 'y':
                                 self.print_info(f"Appending Cloudflare certificate to {current_cafile}")
-                                if not self.certificate_exists_in_file(CERT_PATH, current_cafile):
-                                    with open(current_cafile, 'a') as f:
-                                        f.write(cert_content)
-                                else:
-                                    self.print_info(f"Certificate already exists in {current_cafile}")
+                                self.safe_append_certificate(CERT_PATH, current_cafile)
             else:
                 needs_setup = True
                 self.print_info("Configuring npm certificate...")
@@ -1213,11 +1259,8 @@ class FuwarpPython:
                         else:
                             Path(npm_bundle).touch()
                         
-                        if not self.certificate_exists_in_file(CERT_PATH, npm_bundle):
-                            with open(npm_bundle, 'a') as f:
-                                with open(CERT_PATH, 'r') as cf:
-                                    f.write(cf.read())
-                        
+                        self.safe_append_certificate(CERT_PATH, npm_bundle)
+
                         subprocess.run(['npm', 'config', 'set', 'cafile', npm_bundle])
                         self.print_info(f"Created and configured npm cafile at {npm_bundle}")
         else:
@@ -1241,10 +1284,8 @@ class FuwarpPython:
                         self.print_warn("Could not find system CA bundle, creating new bundle with only Cloudflare certificate")
                         Path(npm_bundle).touch()
                     
-                    with open(npm_bundle, 'a') as f:
-                        with open(CERT_PATH, 'r') as cf:
-                            f.write(cf.read())
-                    
+                    self.safe_append_certificate(CERT_PATH, npm_bundle)
+
                     subprocess.run(['npm', 'config', 'set', 'cafile', npm_bundle])
                     self.print_info(f"Configured npm cafile to: {npm_bundle}")
                     
@@ -1300,12 +1341,9 @@ class FuwarpPython:
                                 except:
                                     Path(new_path).touch()
                             
-                            # Check if certificate already exists in the new path
-                            if not self.certificate_exists_in_file(CERT_PATH, new_path):
-                                with open(new_path, 'a') as f:
-                                    with open(CERT_PATH, 'r') as cf:
-                                        f.write(cf.read())
-                            
+                            # Append certificate to the new path
+                            self.safe_append_certificate(CERT_PATH, new_path)
+
                             needs_setup = True
                             self.print_info("Setting up Python certificate...")
                             self.print_info(f"REQUESTS_CA_BUNDLE is already set to: {requests_ca_bundle}")
@@ -1357,11 +1395,7 @@ class FuwarpPython:
                             self.print_action(f"Would append Cloudflare certificate to {requests_ca_bundle}")
                         else:
                             self.print_info(f"Appending Cloudflare certificate to {requests_ca_bundle}")
-                            if not self.certificate_exists_in_file(CERT_PATH, requests_ca_bundle):
-                                with open(requests_ca_bundle, 'a') as f:
-                                    f.write(cert_content)
-                            else:
-                                self.print_info(f"Certificate already exists in {requests_ca_bundle}")
+                            self.safe_append_certificate(CERT_PATH, requests_ca_bundle)
             else:
                 needs_setup = True
                 self.print_info("Setting up Python certificate...")
@@ -1387,12 +1421,8 @@ class FuwarpPython:
                     Path(python_bundle).touch()
                 
                 # Append Cloudflare certificate
-                # Check if certificate already exists in bundle
-                if not self.certificate_exists_in_file(CERT_PATH, python_bundle):
-                    with open(python_bundle, 'a') as f:
-                        with open(CERT_PATH, 'r') as cf:
-                            f.write(cf.read())
-            
+                self.safe_append_certificate(CERT_PATH, python_bundle)
+
             self.add_to_shell_config("REQUESTS_CA_BUNDLE", python_bundle, shell_config)
             self.add_to_shell_config("SSL_CERT_FILE", python_bundle, shell_config)
             self.add_to_shell_config("CURL_CA_BUNDLE", python_bundle, shell_config)
@@ -1501,12 +1531,8 @@ class FuwarpPython:
                 Path(gcloud_bundle).touch()
             
             # Append Cloudflare certificate
-            # Check if certificate already exists in bundle
-            if not self.certificate_exists_in_file(CERT_PATH, gcloud_bundle):
-                with open(gcloud_bundle, 'a') as f:
-                    with open(CERT_PATH, 'r') as cf:
-                        f.write(cf.read())
-            
+            self.safe_append_certificate(CERT_PATH, gcloud_bundle)
+
             # Configure gcloud
             result = subprocess.run(
                 ['gcloud', 'config', 'set', 'core/custom_ca_certs_file', gcloud_bundle],

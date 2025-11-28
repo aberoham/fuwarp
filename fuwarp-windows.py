@@ -595,8 +595,27 @@ class FuwarpWindows:
         try:
             with open(cert_file, "r") as cf:
                 cert_content = cf.read()
+
+            # Ensure certificate content ends with newline
+            if not cert_content.endswith('\n'):
+                cert_content = cert_content + '\n'
+
+            # Check if target file ends with a newline
+            needs_leading_newline = False
+            if os.path.exists(target_file):
+                with open(target_file, 'rb') as tf:
+                    tf.seek(0, 2)  # Seek to end
+                    if tf.tell() > 0:  # File is not empty
+                        tf.seek(-1, 2)  # Seek to last byte
+                        last_byte = tf.read(1)
+                        # Check for newline (LF) or carriage return (CR for CRLF)
+                        if last_byte not in (b'\n', b'\r'):
+                            needs_leading_newline = True
+
             with open(target_file, "a") as f:
-                f.write("\n" + cert_content)
+                if needs_leading_newline:
+                    f.write("\n")
+                f.write(cert_content)
             self.print_info(f"Appended Cloudflare certificate to {target_file}")
             return True
         except Exception as e:
