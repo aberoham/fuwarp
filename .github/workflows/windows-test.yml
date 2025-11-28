@@ -142,3 +142,162 @@ jobs:
         finally:
             os.unlink(temp_path)
         "@
+
+    - name: Test newline handling - file without trailing newline (issue #13)
+      shell: pwsh
+      run: |
+        $env:PYTHONIOENCODING = "utf-8"
+
+        python -c @"
+        import os
+        import tempfile
+        exec(open('fuwarp-windows.py').read(), globals())
+
+        fw = FuwarpWindows(mode='install', debug=True)
+
+        # Create a mock certificate to append
+        cert_content = '''-----BEGIN CERTIFICATE-----
+MIIEjTCCA3WgAwIBAgISA2Q1Q5XQHgYE8xhA9PkyCgypMA0GCSqGSIb3DQEBCwUA
+MDIxCzAJBgNVBAYTAlVTMRYwFAYDVQQKEw1MZXQncyBFbmNyeXB0MQswCQYDVQQD
+-----END CERTIFICATE-----
+'''
+
+        # Create a bundle file WITHOUT trailing newline (the bug scenario)
+        bundle_no_newline = '''-----BEGIN CERTIFICATE-----
+MIIDSjCCAjKgAwIBAgIQRK+wgNajJ7qJMDmGLvhAazANBgkqhkiG9w0BAQUFADA/
+MSQwIgYDVQQKExtEaWdpdGFsIFNpZ25hdHVyZSBUcnVzdCBDby4xFzAVBgNVBAMT
+-----END CERTIFICATE-----'''  # Note: NO newline at end
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bundle_path = os.path.join(tmpdir, 'bundle.pem')
+            cert_path = os.path.join(tmpdir, 'cert.pem')
+
+            # Write bundle WITHOUT trailing newline using binary mode to be explicit
+            with open(bundle_path, 'wb') as f:
+                f.write(bundle_no_newline.encode('utf-8'))
+
+            # Write cert file
+            with open(cert_path, 'w') as f:
+                f.write(cert_content)
+
+            # Verify bundle doesn't end with newline
+            with open(bundle_path, 'rb') as f:
+                f.seek(-1, 2)
+                last_byte = f.read(1)
+                assert last_byte == b'-', f'Expected bundle to end with dash, got {last_byte!r}'
+
+            # Call append
+            result = fw.append_certificate_if_missing(cert_path, bundle_path)
+            assert result == True, 'Append should succeed'
+
+            # Read result and verify proper PEM formatting
+            with open(bundle_path, 'r') as f:
+                content = f.read()
+
+            # THE CRITICAL CHECK: malformed PEM pattern must NOT exist
+            malformed_pattern = '-----END CERTIFICATE----------BEGIN CERTIFICATE-----'
+            assert malformed_pattern not in content, f'MALFORMED PEM DETECTED! Content contains: {malformed_pattern}'
+
+            # Verify proper separation exists (newline between certs)
+            # On Windows, this could be \r\n or \n depending on how file was written
+            import re
+            proper_separation = re.search(r'-----END CERTIFICATE-----\r?\n+-----BEGIN CERTIFICATE-----', content)
+            assert proper_separation, f'Expected proper newline separation between certificates. Content:\\n{content}'
+
+            print('Test PASSED: File without trailing newline handled correctly')
+        "@
+
+    - name: Test newline handling - file with CRLF ending
+      shell: pwsh
+      run: |
+        $env:PYTHONIOENCODING = "utf-8"
+
+        python -c @"
+        import os
+        import tempfile
+        exec(open('fuwarp-windows.py').read(), globals())
+
+        fw = FuwarpWindows(mode='install', debug=True)
+
+        cert_content = '''-----BEGIN CERTIFICATE-----
+MIIEjTCCA3WgAwIBAgISA2Q1Q5XQHgYE8xhA9PkyCgypMA0GCSqGSIb3DQEBCwUA
+-----END CERTIFICATE-----
+'''
+
+        # Create bundle with explicit CRLF ending
+        bundle_crlf = '-----BEGIN CERTIFICATE-----\r\nMIIDSjCCAjKgAwIBAgIQRK\r\n-----END CERTIFICATE-----\r\n'
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bundle_path = os.path.join(tmpdir, 'bundle.pem')
+            cert_path = os.path.join(tmpdir, 'cert.pem')
+
+            # Write bundle with CRLF using binary mode
+            with open(bundle_path, 'wb') as f:
+                f.write(bundle_crlf.encode('utf-8'))
+
+            with open(cert_path, 'w') as f:
+                f.write(cert_content)
+
+            # Verify bundle ends with LF (the \n part of CRLF)
+            with open(bundle_path, 'rb') as f:
+                f.seek(-1, 2)
+                last_byte = f.read(1)
+                assert last_byte == b'\n', f'Expected CRLF ending (last byte LF), got {last_byte!r}'
+
+            result = fw.append_certificate_if_missing(cert_path, bundle_path)
+            assert result == True
+
+            with open(bundle_path, 'r') as f:
+                content = f.read()
+
+            # Should NOT have malformed PEM
+            assert '-----END CERTIFICATE----------BEGIN CERTIFICATE-----' not in content
+
+            # Should NOT have excessive blank lines (more than 2 newlines between certs)
+            import re
+            excessive_newlines = re.search(r'-----END CERTIFICATE-----(\r?\n){3,}-----BEGIN CERTIFICATE-----', content)
+            assert not excessive_newlines, f'Too many blank lines between certificates'
+
+            print('Test PASSED: File with CRLF ending handled correctly')
+        "@
+
+    - name: Test newline handling - file with LF-only ending (Unix style on Windows)
+      shell: pwsh
+      run: |
+        $env:PYTHONIOENCODING = "utf-8"
+
+        python -c @"
+        import os
+        import tempfile
+        exec(open('fuwarp-windows.py').read(), globals())
+
+        fw = FuwarpWindows(mode='install', debug=True)
+
+        cert_content = '''-----BEGIN CERTIFICATE-----
+MIIEjTCCA3WgAwIBAgISA2Q1Q5XQHgYE8xhA9PkyCgypMA0GCSqGSIb3DQEBCwUA
+-----END CERTIFICATE-----
+'''
+
+        # Create bundle with Unix-style LF only (common when files come from git)
+        bundle_lf = '-----BEGIN CERTIFICATE-----\nMIIDSjCCAjKgAwIBAgIQRK\n-----END CERTIFICATE-----\n'
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bundle_path = os.path.join(tmpdir, 'bundle.pem')
+            cert_path = os.path.join(tmpdir, 'cert.pem')
+
+            # Write bundle with LF only using binary mode
+            with open(bundle_path, 'wb') as f:
+                f.write(bundle_lf.encode('utf-8'))
+
+            with open(cert_path, 'w') as f:
+                f.write(cert_content)
+
+            result = fw.append_certificate_if_missing(cert_path, bundle_path)
+            assert result == True
+
+            with open(bundle_path, 'r') as f:
+                content = f.read()
+
+            assert '-----END CERTIFICATE----------BEGIN CERTIFICATE-----' not in content
+            print('Test PASSED: File with LF-only ending handled correctly')
+        "@
