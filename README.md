@@ -25,30 +25,30 @@ chmod +x ./fuwarp.py
 
 ```powershell
 # Download the Windows-specific script
-Invoke-WebRequest -Uri "https://raw.githubusercontent.com/aberoham/fuwarp/main/fuwarp-windows.py" -OutFile "fuwarp-windows.py"
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/aberoham/fuwarp/main/fuwarp_windows.py" -OutFile "fuwarp_windows.py"
 
 # Check status (no changes made)
-python fuwarp-windows.py
+python fuwarp_windows.py
 
 # Apply fixes to all supported tools
-python fuwarp-windows.py --fix
+python fuwarp_windows.py --fix
 
 # Fix only specific tools (can specify multiple)
-python fuwarp-windows.py --fix --tools node --tools python
-python fuwarp-windows.py --fix --tools node-npm,gcloud
+python fuwarp_windows.py --fix --tools node --tools python
+python fuwarp_windows.py --fix --tools node-npm,gcloud
 
 # List all available tools and their tags
-python fuwarp-windows.py --list-tools
+python fuwarp_windows.py --list-tools
 
 # Run with detailed debug/verbose output (useful for troubleshooting)
-python fuwarp-windows.py --debug
-python fuwarp-windows.py --verbose
+python fuwarp_windows.py --debug
+python fuwarp_windows.py --verbose
 
 # Show version information
-python fuwarp-windows.py --version
+python fuwarp_windows.py --version
 
 # Show help and all available commands
-python fuwarp-windows.py --help
+python fuwarp_windows.py --help
 ```
 
 #### Windows Command Line Options
@@ -119,7 +119,7 @@ Something amiss or not quite right? Please post the full output of a run to an i
 
 #### Windows-Specific Notes
 
-The Windows version (`fuwarp-windows.py`) includes Windows-specific functionality:
+The Windows version (`fuwarp_windows.py`) includes Windows-specific functionality:
 
 - Uses Windows Registry to locate certificates and configuration
 - Handles Windows paths and file permissions
@@ -153,7 +153,7 @@ git clone https://github.com/aberoham/fuwarp.git
 cd fuwarp
 
 # Run the Windows-specific script
-python fuwarp-windows.py --fix
+python fuwarp_windows.py --fix
 ```
 
 ## Troubleshooting
@@ -161,7 +161,7 @@ python fuwarp-windows.py --fix
 If you encounter issues:
 
 1. Ensure WARP is connected: `warp-cli status`
-2. Run with debug output: `./fuwarp.py --debug` (Linux/macOS) or `python fuwarp-windows.py --debug` (Windows)
+2. Run with debug output: `./fuwarp.py --debug` (Linux/macOS) or `python fuwarp_windows.py --debug` (Windows)
 3. Check that Python 3 is properly installed and in your PATH
 4. Verify you have appropriate permissions for the tools you're trying to fix
 

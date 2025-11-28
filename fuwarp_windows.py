@@ -595,8 +595,27 @@ class FuwarpWindows:
         try:
             with open(cert_file, "r") as cf:
                 cert_content = cf.read()
+
+            # Ensure certificate content ends with newline
+            if not cert_content.endswith('\n'):
+                cert_content = cert_content + '\n'
+
+            # Check if target file ends with a newline
+            needs_leading_newline = False
+            if os.path.exists(target_file):
+                with open(target_file, 'rb') as tf:
+                    tf.seek(0, 2)  # Seek to end
+                    if tf.tell() > 0:  # File is not empty
+                        tf.seek(-1, 2)  # Seek to last byte
+                        last_byte = tf.read(1)
+                        # Check for newline (LF) or carriage return (CR for CRLF)
+                        if last_byte not in (b'\n', b'\r'):
+                            needs_leading_newline = True
+
             with open(target_file, "a") as f:
-                f.write("\n" + cert_content)
+                if needs_leading_newline:
+                    f.write("\n")
+                f.write(cert_content)
             self.print_info(f"Appended Cloudflare certificate to {target_file}")
             return True
         except Exception as e:
@@ -2472,7 +2491,7 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
         self.print_info("========")
         if has_issues:
             self.print_warn("Some configurations need attention.")
-            self.print_action("Run 'python fuwarp-windows.py --fix' to fix the issues")
+            self.print_action("Run 'python fuwarp_windows.py --fix' to fix the issues")
         else:
             self.print_info(
                 "✓ All configured tools are properly set up for Cloudflare WARP"
@@ -2602,11 +2621,11 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=f"""
 Examples:
-  python fuwarp-windows.py                    # Check status of all tools
-  python fuwarp-windows.py --fix              # Fix all detected issues
-  python fuwarp-windows.py --tools node       # Check only Node.js
-  python fuwarp-windows.py --fix --tools python,git  # Fix Python and Git only
-  python fuwarp-windows.py --list-tools       # Show available tools
+  python fuwarp_windows.py                    # Check status of all tools
+  python fuwarp_windows.py --fix              # Fix all detected issues
+  python fuwarp_windows.py --tools node       # Check only Node.js
+  python fuwarp_windows.py --fix --tools python,git  # Fix Python and Git only
+  python fuwarp_windows.py --list-tools       # Show available tools
 
 {version_str} | Default: status check only (use --fix to make changes)
         """,
@@ -2668,9 +2687,9 @@ Examples:
         for tool_key, tool_info in temp_fuwarp.tools_registry.items():
             tags_str = ", ".join(tool_info["tags"])
             print(f"  {tool_key:<10} - {tool_info['name']:<25} Tags: {tags_str}")
-        print("\nExamples: python fuwarp-windows.py --fix --tools node,python")
+        print("\nExamples: python fuwarp_windows.py --fix --tools node,python")
         print(
-            "          python fuwarp-windows.py --fix --tools node-npm --tools podman"
+            "          python fuwarp_windows.py --fix --tools node-npm --tools podman"
         )
         sys.exit(0)
 

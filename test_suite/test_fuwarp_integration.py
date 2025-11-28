@@ -364,7 +364,7 @@ class TestConnectionVerification(FuwarpTestCase):
 
 class TestPlatformSpecific(FuwarpTestCase):
     """Tests for platform-specific behavior."""
-    
+
     @pytest.mark.parametrize("platform,expected_path", [
         ("Darwin", "/Library/Java/JavaVirtualMachines"),
         ("Linux", "/usr/lib/jvm"),
@@ -373,10 +373,142 @@ class TestPlatformSpecific(FuwarpTestCase):
         """Test that platform-specific paths are used correctly."""
         with patch('platform.system', return_value=platform):
             instance = fuwarp.FuwarpPython(mode='status')
-            
+
             # Check that instance is aware of platform
             # This would need actual implementation testing
             assert True  # Placeholder for actual platform-specific tests
+
+
+class TestCertificateAppending(FuwarpTestCase):
+    """Tests for certificate appending to ensure proper PEM formatting (issue #13)."""
+
+    def test_append_to_bundle_without_trailing_newline(self, tmp_path):
+        """Ensure appending to a bundle without newline doesn't corrupt PEM.
+
+        This tests the fix for issue #13 where appending to a file without
+        a trailing newline would produce malformed PEM like:
+        -----END CERTIFICATE----------BEGIN CERTIFICATE-----
+        """
+        # Create a CA bundle file WITHOUT trailing newline
+        bundle_file = tmp_path / "ca-bundle.pem"
+        bundle_file.write_text(mock_data.SAMPLE_CA_BUNDLE_NO_NEWLINE)
+
+        # Create a certificate file to append
+        cert_file = tmp_path / "cert.pem"
+        cert_file.write_text(mock_data.MOCK_CERTIFICATE)
+
+        # Create instance and call safe_append_certificate
+        with patch('platform.system', return_value='Darwin'):
+            instance = fuwarp.FuwarpPython(mode='install')
+            result = instance.safe_append_certificate(str(cert_file), str(bundle_file))
+
+        assert result is True
+
+        # Read the resulting file
+        content = bundle_file.read_text()
+
+        # Verify that -----END CERTIFICATE----- is followed by newline, not -----BEGIN
+        # This pattern should NOT appear in a valid PEM file
+        assert "-----END CERTIFICATE----------BEGIN CERTIFICATE-----" not in content
+
+        # Verify proper separation exists
+        assert "-----END CERTIFICATE-----\n-----BEGIN CERTIFICATE-----" in content or \
+               "-----END CERTIFICATE-----\n\n-----BEGIN CERTIFICATE-----" in content
+
+    def test_append_to_bundle_with_trailing_newline(self, tmp_path):
+        """Verify normal case still works - bundle with trailing newline."""
+        # Create a CA bundle file WITH trailing newline
+        bundle_file = tmp_path / "ca-bundle.pem"
+        bundle_file.write_text(mock_data.SAMPLE_CA_BUNDLE)  # Has trailing newline
+
+        # Create a certificate file to append
+        cert_file = tmp_path / "cert.pem"
+        cert_file.write_text(mock_data.MOCK_CERTIFICATE)
+
+        # Create instance and call safe_append_certificate
+        with patch('platform.system', return_value='Darwin'):
+            instance = fuwarp.FuwarpPython(mode='install')
+            result = instance.safe_append_certificate(str(cert_file), str(bundle_file))
+
+        assert result is True
+
+        # Read the resulting file
+        content = bundle_file.read_text()
+
+        # Verify that the malformed pattern doesn't exist
+        assert "-----END CERTIFICATE----------BEGIN CERTIFICATE-----" not in content
+
+    def test_append_ensures_certificate_ends_with_newline(self, tmp_path):
+        """Ensure appended certificate itself ends with newline."""
+        # Create an empty bundle file
+        bundle_file = tmp_path / "ca-bundle.pem"
+        bundle_file.write_text("")
+
+        # Create a certificate file WITHOUT trailing newline
+        cert_file = tmp_path / "cert.pem"
+        cert_file.write_text(mock_data.MOCK_CERTIFICATE_NO_NEWLINE)
+
+        # Create instance and call safe_append_certificate
+        with patch('platform.system', return_value='Darwin'):
+            instance = fuwarp.FuwarpPython(mode='install')
+            result = instance.safe_append_certificate(str(cert_file), str(bundle_file))
+
+        assert result is True
+
+        # Read the resulting file
+        content = bundle_file.read_text()
+
+        # Verify the file ends with a newline
+        assert content.endswith('\n')
+
+    def test_append_skips_if_certificate_already_exists(self, tmp_path):
+        """Verify that appending skips if certificate already exists in bundle."""
+        # Create a bundle that already contains the certificate
+        bundle_file = tmp_path / "ca-bundle.pem"
+        bundle_file.write_text(mock_data.MOCK_CERTIFICATE)
+
+        # Use the same certificate file
+        cert_file = tmp_path / "cert.pem"
+        cert_file.write_text(mock_data.MOCK_CERTIFICATE)
+
+        original_size = bundle_file.stat().st_size
+
+        # Create instance and mock certificate_exists_in_file to return True
+        # (since mock certificates don't work with openssl fingerprint check)
+        with patch('platform.system', return_value='Darwin'):
+            instance = fuwarp.FuwarpPython(mode='install')
+            with patch.object(instance, 'certificate_exists_in_file', return_value=True):
+                result = instance.safe_append_certificate(str(cert_file), str(bundle_file))
+
+        # Should return True (success, even though skipped)
+        assert result is True
+
+        # File size should be the same (nothing appended)
+        assert bundle_file.stat().st_size == original_size
+
+    def test_append_to_nonexistent_target_creates_file(self, tmp_path):
+        """Verify appending to a non-existent file creates it with the certificate."""
+        # Target file doesn't exist
+        bundle_file = tmp_path / "new-bundle.pem"
+
+        # Create a certificate file
+        cert_file = tmp_path / "cert.pem"
+        cert_file.write_text(mock_data.MOCK_CERTIFICATE)
+
+        # Create instance and call safe_append_certificate
+        with patch('platform.system', return_value='Darwin'):
+            instance = fuwarp.FuwarpPython(mode='install')
+            result = instance.safe_append_certificate(str(cert_file), str(bundle_file))
+
+        assert result is True
+
+        # File should now exist
+        assert bundle_file.exists()
+
+        # Content should be the certificate
+        content = bundle_file.read_text()
+        assert "-----BEGIN CERTIFICATE-----" in content
+        assert "-----END CERTIFICATE-----" in content
 
 
 if __name__ == '__main__':

@@ -4,12 +4,12 @@ on:
   push:
     branches: [ main ]
     paths:
-      - 'fuwarp-windows.py'
+      - 'fuwarp_windows.py'
       - '.github/workflows/windows-test.yml'
   pull_request:
     branches: [ main ]
     paths:
-      - 'fuwarp-windows.py'
+      - 'fuwarp_windows.py'
       - '.github/workflows/windows-test.yml'
   workflow_dispatch:  # Allow manual triggering if needed
 
@@ -50,15 +50,15 @@ jobs:
         $env:PYTHONIOENCODING = "utf-8"
 
         # Test direct script execution (not as a module import)
-        python fuwarp-windows.py --help
-        python fuwarp-windows.py --version
+        python fuwarp_windows.py --help
+        python fuwarp_windows.py --version
 
     - name: Test in status mode (read-only)
       shell: pwsh
       run: |
         # Set UTF-8 encoding for Python to handle Unicode characters
         $env:PYTHONIOENCODING = "utf-8"
-        python fuwarp-windows.py
+        python fuwarp_windows.py
 
     - name: Test path construction
       shell: pwsh
@@ -70,7 +70,7 @@ jobs:
         import os
         import sys
         # Import the module by executing the file directly to get the class
-        exec(open('fuwarp-windows.py').read(), globals())  # This loads FuwarpWindows class
+        exec(open('fuwarp_windows.py').read(), globals())  # This loads FuwarpWindows class
 
         # Test that paths are properly constructed for Windows
         fw = FuwarpWindows(mode='status', debug=True)
@@ -105,7 +105,7 @@ jobs:
         python -c @"
         import sys
         # Import the module by executing the file directly
-        exec(open('fuwarp-windows.py').read(), globals())
+        exec(open('fuwarp_windows.py').read(), globals())
 
         fw = FuwarpWindows(mode='status', debug=True)
         result = fw.download_certificate()
@@ -125,7 +125,7 @@ jobs:
         import sys
         import tempfile
         # Import the module by executing the file directly
-        exec(open('fuwarp-windows.py').read(), globals())
+        exec(open('fuwarp_windows.py').read(), globals())
 
         fw = FuwarpWindows(mode='status', debug=True)
 
@@ -141,4 +141,146 @@ jobs:
             print('Same-file protection test passed')
         finally:
             os.unlink(temp_path)
+        "@
+
+    - name: Test newline handling - file without trailing newline (issue #13)
+      shell: pwsh
+      run: |
+        $env:PYTHONIOENCODING = "utf-8"
+
+        python -c @"
+        import os
+        import re
+        import tempfile
+        exec(open('fuwarp_windows.py').read(), globals())
+
+        fw = FuwarpWindows(mode='install', debug=True)
+
+        # Create certificate content (with trailing newline)
+        cert_content = '-----BEGIN CERTIFICATE-----\nMIIEjTCCA3WgAwIBAgISA2Q1\n-----END CERTIFICATE-----\n'
+
+        # Create bundle WITHOUT trailing newline (the bug scenario from issue #13)
+        bundle_no_newline = '-----BEGIN CERTIFICATE-----\nMIIDSjCCAjKgAwIBAgIQRK\n-----END CERTIFICATE-----'
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bundle_path = os.path.join(tmpdir, 'bundle.pem')
+            cert_path = os.path.join(tmpdir, 'cert.pem')
+
+            # Write bundle WITHOUT trailing newline using binary mode
+            with open(bundle_path, 'wb') as f:
+                f.write(bundle_no_newline.encode('utf-8'))
+
+            with open(cert_path, 'w') as f:
+                f.write(cert_content)
+
+            # Verify bundle doesn't end with newline
+            with open(bundle_path, 'rb') as f:
+                f.seek(-1, 2)
+                last_byte = f.read(1)
+                assert last_byte == b'-', f'Setup error: bundle should end with dash, got {last_byte!r}'
+
+            # Call append - this is what we're testing
+            result = fw.append_certificate_if_missing(cert_path, bundle_path)
+            assert result == True, 'Append should succeed'
+
+            # Read result and verify proper PEM formatting
+            with open(bundle_path, 'r') as f:
+                content = f.read()
+
+            # THE CRITICAL CHECK: malformed PEM pattern must NOT exist
+            malformed = '-----END CERTIFICATE----------BEGIN CERTIFICATE-----'
+            assert malformed not in content, f'MALFORMED PEM DETECTED!'
+
+            # Verify proper separation exists (newline between certs)
+            proper = re.search(r'-----END CERTIFICATE-----\r?\n+-----BEGIN CERTIFICATE-----', content)
+            assert proper, 'Expected newline separation between certificates'
+
+            print('Test PASSED: File without trailing newline handled correctly')
+        "@
+
+    - name: Test newline handling - file with CRLF ending
+      shell: pwsh
+      run: |
+        $env:PYTHONIOENCODING = "utf-8"
+
+        python -c @"
+        import os
+        import re
+        import tempfile
+        exec(open('fuwarp_windows.py').read(), globals())
+
+        fw = FuwarpWindows(mode='install', debug=True)
+
+        cert_content = '-----BEGIN CERTIFICATE-----\nMIIEjTCCA3WgAwIBAgISA2Q1\n-----END CERTIFICATE-----\n'
+
+        # Bundle with explicit CRLF line endings
+        bundle_crlf = '-----BEGIN CERTIFICATE-----\r\nMIIDSjCCAjKgAwIBAgIQRK\r\n-----END CERTIFICATE-----\r\n'
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bundle_path = os.path.join(tmpdir, 'bundle.pem')
+            cert_path = os.path.join(tmpdir, 'cert.pem')
+
+            with open(bundle_path, 'wb') as f:
+                f.write(bundle_crlf.encode('utf-8'))
+
+            with open(cert_path, 'w') as f:
+                f.write(cert_content)
+
+            # Verify bundle ends with LF (the \n part of CRLF)
+            with open(bundle_path, 'rb') as f:
+                f.seek(-1, 2)
+                last_byte = f.read(1)
+                assert last_byte == b'\n', f'Setup error: expected LF, got {last_byte!r}'
+
+            result = fw.append_certificate_if_missing(cert_path, bundle_path)
+            assert result == True
+
+            with open(bundle_path, 'r') as f:
+                content = f.read()
+
+            # Should NOT have malformed PEM
+            assert '-----END CERTIFICATE----------BEGIN CERTIFICATE-----' not in content
+
+            # Should NOT have excessive blank lines (3+ newlines between certs)
+            excessive = re.search(r'-----END CERTIFICATE-----(\r?\n){3,}-----BEGIN CERTIFICATE-----', content)
+            assert not excessive, 'Too many blank lines between certificates'
+
+            print('Test PASSED: File with CRLF ending handled correctly')
+        "@
+
+    - name: Test newline handling - file with LF-only ending (Unix style)
+      shell: pwsh
+      run: |
+        $env:PYTHONIOENCODING = "utf-8"
+
+        python -c @"
+        import os
+        import tempfile
+        exec(open('fuwarp_windows.py').read(), globals())
+
+        fw = FuwarpWindows(mode='install', debug=True)
+
+        cert_content = '-----BEGIN CERTIFICATE-----\nMIIEjTCCA3WgAwIBAgISA2Q1\n-----END CERTIFICATE-----\n'
+
+        # Bundle with Unix-style LF only (common when files come from git)
+        bundle_lf = '-----BEGIN CERTIFICATE-----\nMIIDSjCCAjKgAwIBAgIQRK\n-----END CERTIFICATE-----\n'
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bundle_path = os.path.join(tmpdir, 'bundle.pem')
+            cert_path = os.path.join(tmpdir, 'cert.pem')
+
+            with open(bundle_path, 'wb') as f:
+                f.write(bundle_lf.encode('utf-8'))
+
+            with open(cert_path, 'w') as f:
+                f.write(cert_content)
+
+            result = fw.append_certificate_if_missing(cert_path, bundle_path)
+            assert result == True
+
+            with open(bundle_path, 'r') as f:
+                content = f.read()
+
+            assert '-----END CERTIFICATE----------BEGIN CERTIFICATE-----' not in content
+            print('Test PASSED: File with LF-only ending handled correctly')
         "@
