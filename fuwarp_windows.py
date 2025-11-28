@@ -2491,7 +2491,7 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
         self.print_info("========")
         if has_issues:
             self.print_warn("Some configurations need attention.")
-            self.print_action("Run 'python fuwarp-windows.py --fix' to fix the issues")
+            self.print_action("Run 'python fuwarp_windows.py --fix' to fix the issues")
         else:
             self.print_info(
                 "✓ All configured tools are properly set up for Cloudflare WARP"
@@ -2621,11 +2621,11 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=f"""
 Examples:
-  python fuwarp-windows.py                    # Check status of all tools
-  python fuwarp-windows.py --fix              # Fix all detected issues
-  python fuwarp-windows.py --tools node       # Check only Node.js
-  python fuwarp-windows.py --fix --tools python,git  # Fix Python and Git only
-  python fuwarp-windows.py --list-tools       # Show available tools
+  python fuwarp_windows.py                    # Check status of all tools
+  python fuwarp_windows.py --fix              # Fix all detected issues
+  python fuwarp_windows.py --tools node       # Check only Node.js
+  python fuwarp_windows.py --fix --tools python,git  # Fix Python and Git only
+  python fuwarp_windows.py --list-tools       # Show available tools
 
 {version_str} | Default: status check only (use --fix to make changes)
         """,
@@ -2687,9 +2687,9 @@ Examples:
         for tool_key, tool_info in temp_fuwarp.tools_registry.items():
             tags_str = ", ".join(tool_info["tags"])
             print(f"  {tool_key:<10} - {tool_info['name']:<25} Tags: {tags_str}")
-        print("\nExamples: python fuwarp-windows.py --fix --tools node,python")
+        print("\nExamples: python fuwarp_windows.py --fix --tools node,python")
         print(
-            "          python fuwarp-windows.py --fix --tools node-npm --tools podman"
+            "          python fuwarp_windows.py --fix --tools node-npm --tools podman"
         )
         sys.exit(0)
 

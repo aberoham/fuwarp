@@ -177,7 +177,7 @@ def create_temp_cert_file(tmp_path):
 
 class FuwarpTestCase:
     """Base class providing common test functionality."""
-    
+
     @staticmethod
     def create_fuwarp_instance(mode='status', debug=False, selected_tools=None):
         """Create a FuwarpPython instance with proper mocking."""
@@ -188,3 +188,22 @@ class FuwarpTestCase:
                 debug=debug,
                 selected_tools=selected_tools or []
             )
+
+
+def import_fuwarp_windows():
+    """Import the Windows version of fuwarp.
+
+    Since fuwarp_windows.py is in the parent directory, we need to use
+    importlib to load it as a module.
+    """
+    import importlib.util
+    import os
+
+    # Get path to fuwarp_windows.py relative to test_suite directory
+    test_suite_dir = os.path.dirname(os.path.abspath(__file__))
+    module_path = os.path.join(os.path.dirname(test_suite_dir), "fuwarp_windows.py")
+
+    spec = importlib.util.spec_from_file_location("fuwarp_windows", module_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
