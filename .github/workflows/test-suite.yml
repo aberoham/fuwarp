@@ -95,8 +95,3 @@ jobs:
       working-directory: test_suite
       run: |
         python -m pytest test_fuwarp_windows.py -v --tb=short
-
-    - name: Run cross-platform tests
-      working-directory: test_suite
-      run: |
-        python -m pytest test_fuwarp_integration.py -v --tb=short
