@@ -158,7 +158,10 @@ class TestCLIAndWorkflow(FuwarpTestCase):
             with patch('fuwarp.sys.exit'):
                 fuwarp.main()
             
-            mock_class.assert_called_with(mode='install', debug=False, selected_tools=[])
+            mock_class.assert_called_with(
+                mode='install', debug=False, selected_tools=[],
+                cert_file=None, manual_cert=False, skip_verify=False
+            )
     
     @patch('fuwarp.sys.argv', ['fuwarp.py', '--tools', 'node,python'])
     def test_cli_tool_selection(self):
@@ -172,9 +175,10 @@ class TestCLIAndWorkflow(FuwarpTestCase):
                 fuwarp.main()
             
             mock_class.assert_called_with(
-                mode='status', 
-                debug=False, 
-                selected_tools=['node', 'python']
+                mode='status',
+                debug=False,
+                selected_tools=['node', 'python'],
+                cert_file=None, manual_cert=False, skip_verify=False
             )
     
     def test_complete_status_workflow(self):
