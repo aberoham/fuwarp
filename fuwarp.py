@@ -1881,86 +1881,130 @@ class FuwarpPython:
             self.print_info("Added ca_certificate to wget configuration")
     
     def setup_podman_cert(self):
-        """Setup Podman certificate."""
+        """Setup Podman certificate.
+
+        Uses a hybrid approach:
+        1. Always installs to ~/.docker/certs.d/ (well-known Docker location)
+        2. If Podman machine is running, also installs into VM for immediate effect
+        """
         if not self.command_exists('podman'):
             return
-        
+
         self.print_info("Configuring Podman certificate...")
-        
-        # Check if podman machine exists
+
+        # Primary method: Install to ~/.docker/certs.d/ (shared with other container tools)
+        docker_certs_dir = os.path.expanduser("~/.docker/certs.d")
+        cert_dest = os.path.join(docker_certs_dir, "cloudflare-warp.crt")
+
+        # Check if VM is currently running
         try:
             result = subprocess.run(['podman', 'machine', 'list'], capture_output=True, text=True)
-            if 'Currently running' not in result.stdout:
-                self.print_warn("No Podman machine is currently running")
-                self.print_info("Please start a Podman machine first with: podman machine start")
-                return
+            vm_is_running = 'Currently running' in result.stdout
         except Exception:
-            return
-        
+            vm_is_running = False
+
         if not self.is_install_mode():
-            self.print_action("Would copy certificate to Podman VM")
-            self.print_action(f"Would run: podman machine ssh 'sudo tee /etc/pki/ca-trust/source/anchors/cloudflare-warp.pem' < {CERT_PATH}")
-            self.print_action("Would run: podman machine ssh 'sudo update-ca-trust'")
+            self.print_action(f"Would copy certificate to {cert_dest} (persistent)")
+            if vm_is_running:
+                self.print_action("Would also install certificate into running Podman VM for immediate effect")
         else:
-            self.print_info("Copying certificate to Podman VM...")
-            
-            # Copy certificate into Podman VM
-            with open(CERT_PATH, 'r') as f:
-                cert_content = f.read()
-            
-            result = subprocess.run(
-                ['podman', 'machine', 'ssh', 'sudo tee /etc/pki/ca-trust/source/anchors/cloudflare-warp.pem'],
-                input=cert_content, text=True, capture_output=True
-            )
-            
-            if result.returncode == 0:
-                # Update CA trust
+            # Create directory and copy certificate (persistent location)
+            os.makedirs(docker_certs_dir, exist_ok=True)
+            shutil.copy(CERT_PATH, cert_dest)
+            self.print_info(f"Certificate installed to {cert_dest}")
+
+            # If VM is running, also install for immediate effect
+            if vm_is_running:
+                self.print_info("Podman machine is running - also installing certificate into VM...")
+
+                with open(CERT_PATH, 'r') as f:
+                    cert_content = f.read()
+
                 result = subprocess.run(
-                    ['podman', 'machine', 'ssh', 'sudo update-ca-trust'],
-                    capture_output=True
+                    ['podman', 'machine', 'ssh', 'sudo tee /etc/pki/ca-trust/source/anchors/cloudflare-warp.pem'],
+                    input=cert_content, text=True, capture_output=True
                 )
+
                 if result.returncode == 0:
-                    self.print_info("Podman certificate installed successfully")
+                    # Update CA trust
+                    result = subprocess.run(
+                        ['podman', 'machine', 'ssh', 'sudo update-ca-trust'],
+                        capture_output=True
+                    )
+                    if result.returncode == 0:
+                        self.print_info("Certificate installed in VM - Podman is ready")
+                    else:
+                        self.print_warn("Certificate copied to VM but failed to update CA trust")
+                        self.print_info("Try: podman machine ssh 'sudo update-ca-trust'")
                 else:
-                    self.print_error("Failed to update CA trust in Podman VM")
+                    self.print_warn("Failed to install certificate into running VM")
+                    self.print_info("Certificate in ~/.docker/certs.d/ will be available for future use")
             else:
-                self.print_error("Failed to copy certificate to Podman VM")
+                self.print_info("Podman machine is not running")
+                self.print_info("Run 'podman machine start' then re-run fuwarp to install into VM")
     
     def setup_rancher_cert(self):
-        """Setup Rancher certificate."""
+        """Setup Rancher Desktop certificate.
+
+        Uses a hybrid approach:
+        1. Always installs to ~/.docker/certs.d/ (well-known Docker location)
+        2. If Rancher Desktop is running, also installs into VM for immediate effect
+        """
         if not self.command_exists('rdctl'):
             return
-        
-        self.print_info("Configuring Rancher certificate...")
-        
+
+        self.print_info("Configuring Rancher Desktop certificate...")
+
+        # Primary method: Install to ~/.docker/certs.d/ (shared with other container tools)
+        docker_certs_dir = os.path.expanduser("~/.docker/certs.d")
+        cert_dest = os.path.join(docker_certs_dir, "cloudflare-warp.crt")
+
+        # Check if Rancher Desktop is running
+        try:
+            result = subprocess.run(['rdctl', 'version'], capture_output=True, text=True)
+            vm_is_running = result.returncode == 0
+        except Exception:
+            vm_is_running = False
+
         if not self.is_install_mode():
-            self.print_action("Would copy certificate to Rancher VM")
-            self.print_action(f"Would run: rdctl shell sudo tee /usr/local/share/ca-certificates/cloudflare-warp.pem < {CERT_PATH}")
-            self.print_action("Would run: rdctl shell sudo update-ca-certificates")
+            self.print_action(f"Would copy certificate to {cert_dest} (persistent)")
+            if vm_is_running:
+                self.print_action("Would also install certificate into running Rancher Desktop VM for immediate effect")
         else:
-            self.print_info("Copying certificate to Rancher VM...")
-            
-            # Copy certificate into Rancher VM
-            with open(CERT_PATH, 'r') as f:
-                cert_content = f.read()
-            
-            result = subprocess.run(
-                ['rdctl', 'shell', 'sudo', 'tee', '/usr/local/share/ca-certificates/cloudflare-warp.pem'],
-                input=cert_content, text=True, capture_output=True
-            )
-            
-            if result.returncode == 0:
-                # Update CA certificates
+            # Create directory and copy certificate (persistent location)
+            os.makedirs(docker_certs_dir, exist_ok=True)
+            shutil.copy(CERT_PATH, cert_dest)
+            self.print_info(f"Certificate installed to {cert_dest}")
+
+            # If VM is running, also install for immediate effect
+            if vm_is_running:
+                self.print_info("Rancher Desktop is running - also installing certificate into VM...")
+
+                with open(CERT_PATH, 'r') as f:
+                    cert_content = f.read()
+
                 result = subprocess.run(
-                    ['rdctl', 'shell', 'sudo', 'update-ca-certificates'],
-                    capture_output=True
+                    ['rdctl', 'shell', 'sudo', 'tee', '/usr/local/share/ca-certificates/cloudflare-warp.pem'],
+                    input=cert_content, text=True, capture_output=True
                 )
+
                 if result.returncode == 0:
-                    self.print_info("Rancher certificate installed successfully")
+                    # Update CA certificates
+                    result = subprocess.run(
+                        ['rdctl', 'shell', 'sudo', 'update-ca-certificates'],
+                        capture_output=True
+                    )
+                    if result.returncode == 0:
+                        self.print_info("Certificate installed in VM - Rancher Desktop is ready")
+                    else:
+                        self.print_warn("Certificate copied to VM but failed to update CA certificates")
+                        self.print_info("Try: rdctl shell sudo update-ca-certificates")
                 else:
-                    self.print_error("Failed to update CA certificates in Rancher VM")
+                    self.print_warn("Failed to install certificate into running VM")
+                    self.print_info("Certificate in ~/.docker/certs.d/ will be available for future use")
             else:
-                self.print_error("Failed to copy certificate to Rancher VM")
+                self.print_info("Rancher Desktop is not running")
+                self.print_info("Start Rancher Desktop then re-run fuwarp to install into VM")
     
     def setup_android_emulator_cert(self):
         """Setup Android Emulator certificate."""
@@ -2668,55 +2712,87 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
         return has_issues
 
     def check_podman_status(self, temp_warp_cert):
-        """Check Podman configuration status."""
+        """Check Podman configuration status.
+
+        Checks both the persistent ~/.docker/certs.d/ location and the running VM.
+        """
         has_issues = False
         if self.command_exists('podman'):
+            # Check persistent certificate location first (primary)
+            docker_certs_dir = os.path.expanduser("~/.docker/certs.d")
+            cert_path = os.path.join(docker_certs_dir, "cloudflare-warp.crt")
+
+            if os.path.exists(cert_path):
+                if self.certificate_likely_exists_in_file(temp_warp_cert, cert_path):
+                    self.print_info("  ✓ Certificate installed in ~/.docker/certs.d/ (persistent)")
+                else:
+                    self.print_warn("  ✗ Certificate in ~/.docker/certs.d/ is outdated")
+                    has_issues = True
+            else:
+                self.print_warn("  ✗ Certificate not installed in ~/.docker/certs.d/")
+                has_issues = True
+
+            # Check VM status if running
             try:
                 result = subprocess.run(['podman', 'machine', 'list'], capture_output=True, text=True)
                 if 'Currently running' in result.stdout:
-                    # Check if certificate exists in Podman VM
+                    # VM is running - also check certificate in VM
                     result = subprocess.run(
                         ['podman', 'machine', 'ssh', 'test -f /etc/pki/ca-trust/source/anchors/cloudflare-warp.pem'],
                         capture_output=True
                     )
                     if result.returncode == 0:
-                        self.print_info("  ✓ Podman VM has Cloudflare certificate installed")
+                        self.print_info("  ✓ Certificate installed in running VM")
                     else:
-                        self.print_warn("  ✗ Podman VM missing Cloudflare certificate")
-                        has_issues = True
+                        self.print_info("  - Certificate not in VM (run fuwarp --fix to install)")
                 else:
-                    self.print_info("  - Podman installed but no machine is running")
-                    self.print_info("    Start a machine with: podman machine start")
+                    self.print_info("  - Podman machine is stopped (certificate will be available on start)")
             except Exception:
-                self.print_info("  - Failed to check Podman status")
+                self.print_info("  - Could not check Podman VM status")
         else:
-            self.print_info("  - Podman not installed (would configure VM if present)")
+            self.print_info("  - Podman not installed")
         return has_issues
 
     def check_rancher_status(self, temp_warp_cert):
-        """Check Rancher Desktop configuration status."""
+        """Check Rancher Desktop configuration status.
+
+        Checks both the persistent ~/.docker/certs.d/ location and the running VM.
+        """
         has_issues = False
         if self.command_exists('rdctl'):
+            # Check persistent certificate location first (primary)
+            docker_certs_dir = os.path.expanduser("~/.docker/certs.d")
+            cert_path = os.path.join(docker_certs_dir, "cloudflare-warp.crt")
+
+            if os.path.exists(cert_path):
+                if self.certificate_likely_exists_in_file(temp_warp_cert, cert_path):
+                    self.print_info("  ✓ Certificate installed in ~/.docker/certs.d/ (persistent)")
+                else:
+                    self.print_warn("  ✗ Certificate in ~/.docker/certs.d/ is outdated")
+                    has_issues = True
+            else:
+                self.print_warn("  ✗ Certificate not installed in ~/.docker/certs.d/")
+                has_issues = True
+
+            # Check VM status if running
             try:
-                # Try to check if Rancher is running
                 result = subprocess.run(['rdctl', 'version'], capture_output=True, text=True)
-                if 'rdctl' in result.stdout:
-                    # Check if certificate exists in Rancher VM
+                if result.returncode == 0:
+                    # VM is running - also check certificate in VM
                     result = subprocess.run(
                         ['rdctl', 'shell', 'test', '-f', '/usr/local/share/ca-certificates/cloudflare-warp.pem'],
                         capture_output=True
                     )
                     if result.returncode == 0:
-                        self.print_info("  ✓ Rancher Desktop VM has Cloudflare certificate installed")
+                        self.print_info("  ✓ Certificate installed in running VM")
                     else:
-                        self.print_warn("  ✗ Rancher Desktop VM missing Cloudflare certificate")
-                        has_issues = True
+                        self.print_info("  - Certificate not in VM (run fuwarp --fix to install)")
                 else:
-                    self.print_info("  - Rancher Desktop installed but not running")
+                    self.print_info("  - Rancher Desktop is stopped (certificate will be available on start)")
             except Exception:
-                self.print_info("  - Rancher Desktop installed but not running")
+                self.print_info("  - Could not check Rancher Desktop VM status")
         else:
-            self.print_info("  - Rancher Desktop not installed (would configure if present)")
+            self.print_info("  - Rancher Desktop not installed")
         return has_issues
 
     def check_android_status(self, temp_warp_cert):
@@ -2940,15 +3016,28 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
             else:
                 self.print_info("  - curl not installed")
             print()
-        # Check Docker configuration if not filtering
+        # Check Docker/Container certificate location if not filtering
         if not self.selected_tools:
-            self.print_status("Docker Configuration:")
-            if self.command_exists('docker'):
-                self.print_info("  - Docker detected")
-                self.print_info("    Note: Docker daemon certificate configuration varies by platform")
-                self.print_info("    You may need to add certificates to Docker images directly")
+            self.print_status("Docker/Container Configuration:")
+            docker_certs_dir = os.path.expanduser("~/.docker/certs.d")
+            cert_path = os.path.join(docker_certs_dir, "cloudflare-warp.crt")
+            if os.path.exists(cert_path):
+                if self.certificate_likely_exists_in_file(temp_warp_cert, cert_path):
+                    self.print_info(f"  ✓ Certificate installed in {docker_certs_dir}")
+                    self.print_info("    (Used by: Colima, Podman, Rancher Desktop, Lima-based tools)")
+                else:
+                    self.print_warn(f"  ✗ Certificate in {docker_certs_dir} is outdated")
             else:
-                self.print_info("  - Docker not installed")
+                # Only warn if container tools are detected
+                has_container_tools = (self.command_exists('docker') or
+                                       self.command_exists('colima') or
+                                       self.command_exists('podman') or
+                                       self.command_exists('rdctl'))
+                if has_container_tools:
+                    self.print_warn(f"  ✗ Certificate not in {docker_certs_dir}")
+                    self.print_action("    Run with --fix to install for container tools")
+                else:
+                    self.print_info("  - No container runtimes detected")
             print()
         # Show information about additional tools if not filtering
         if not self.selected_tools:
