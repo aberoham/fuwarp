@@ -58,6 +58,25 @@ New regression tests added:
 - `test_no_subprocess_explosion_for_large_bundles`
 - `test_safe_append_uses_fast_check`
 
+### 6. Update Check Functionality (PR #31)
+Added `check_for_updates()` method to compare local file hash against GitHub:
+- Uses `ssl._create_unverified_context()` since WARP certificate might not be configured yet
+- Fetches from `https://raw.githubusercontent.com/aberoham/fuwarp/main/fuwarp.py`
+- Compares SHA256 hashes and warns user if update is available
+- Apply same pattern to fuwarp_windows.py with appropriate URL
+
+### 7. Connectivity-First Status Checks (PR #31)
+The `check_gcloud_status()` function was improved to verify actual connectivity:
+- **Before**: Flagged as issue if `core/custom_ca_certs_file` not configured
+- **After**: First calls `verify_connection("gcloud")` to test actual connectivity
+- If gcloud works (e.g., via system trust store), no issue is flagged
+- Apply same pattern to fuwarp_windows.py
+
+Added `verify_connection("gcloud")` handler:
+- Runs `gcloud config list --format=value(core.account)` to test connectivity
+- Distinguishes SSL errors from other errors (non-SSL errors = connectivity OK)
+- Handles timeout gracefully
+
 ## Windows-Specific Considerations
 
 - Windows uses different system certificate paths

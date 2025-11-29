@@ -5,7 +5,8 @@ These tests verify the core workflows and functionality of the fuwarp script
 by mocking external dependencies and testing realistic scenarios.
 """
 import sys
-from unittest.mock import patch, MagicMock, call
+import urllib.error
+from unittest.mock import patch, MagicMock, call, mock_open
 import pytest
 
 # Import test utilities
@@ -1191,6 +1192,202 @@ class TestCertificateContentMatching(FuwarpTestCase):
 
         # Should still find the certificate despite whitespace differences
         assert result is True, "Failed to find certificate with whitespace variations"
+
+
+class TestUpdateCheck(FuwarpTestCase):
+    """Tests for the update check functionality."""
+
+    def test_check_for_updates_uses_unverified_ssl(self, tmp_path):
+        """Verify update check uses unverified SSL context."""
+        with patch('platform.system', return_value='Darwin'):
+            instance = fuwarp.FuwarpPython(mode='status')
+
+        with patch('urllib.request.urlopen') as mock_urlopen, \
+             patch('builtins.open', mock_open(read_data=b'test content')):
+
+            mock_response = MagicMock()
+            mock_response.read.return_value = b'different content'
+            mock_response.__enter__ = MagicMock(return_value=mock_response)
+            mock_response.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_response
+
+            instance.check_for_updates()
+
+            # Verify urlopen was called with context parameter
+            call_kwargs = mock_urlopen.call_args
+            assert call_kwargs is not None
+            # The context should be passed as a keyword argument
+            assert 'context' in call_kwargs.kwargs or len(call_kwargs.args) >= 2
+
+    def test_check_for_updates_returns_true_when_different(self, tmp_path):
+        """Verify update check returns True when versions differ."""
+        with patch('platform.system', return_value='Darwin'):
+            instance = fuwarp.FuwarpPython(mode='status')
+
+        with patch('urllib.request.urlopen') as mock_urlopen, \
+             patch('builtins.open', mock_open(read_data=b'local content')):
+
+            mock_response = MagicMock()
+            mock_response.read.return_value = b'remote content different'
+            mock_response.__enter__ = MagicMock(return_value=mock_response)
+            mock_response.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_response
+
+            result = instance.check_for_updates()
+
+            assert result is True, "check_for_updates should return True when hashes differ"
+
+    def test_check_for_updates_returns_false_when_same(self, tmp_path):
+        """Verify update check returns False when versions match."""
+        content = b'identical content'
+
+        with patch('platform.system', return_value='Darwin'):
+            instance = fuwarp.FuwarpPython(mode='status')
+
+        with patch('urllib.request.urlopen') as mock_urlopen, \
+             patch('builtins.open', mock_open(read_data=content)):
+
+            mock_response = MagicMock()
+            mock_response.read.return_value = content
+            mock_response.__enter__ = MagicMock(return_value=mock_response)
+            mock_response.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_response
+
+            result = instance.check_for_updates()
+
+            assert result is False, "check_for_updates should return False when hashes match"
+
+    def test_check_for_updates_handles_network_error(self, tmp_path):
+        """Verify update check handles network errors gracefully."""
+        with patch('platform.system', return_value='Darwin'):
+            instance = fuwarp.FuwarpPython(mode='status')
+
+        with patch('urllib.request.urlopen') as mock_urlopen:
+            mock_urlopen.side_effect = urllib.error.URLError("Network error")
+
+            result = instance.check_for_updates()
+
+            # Should return False on error, not raise
+            assert result is False
+
+
+class TestGcloudVerification(FuwarpTestCase):
+    """Tests for gcloud verification functionality."""
+
+    def test_verify_connection_gcloud_working(self, tmp_path):
+        """Test gcloud verification when connection works."""
+        with patch('platform.system', return_value='Darwin'):
+            instance = fuwarp.FuwarpPython(mode='status')
+
+        with patch('subprocess.run') as mock_run, \
+             patch.object(instance, 'command_exists', return_value=True), \
+             patch('shutil.which', return_value='/usr/bin/gcloud'):
+
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout='user@example.com\n',
+                stderr=''
+            )
+
+            result = instance.verify_connection("gcloud")
+
+            assert result == "WORKING"
+
+    def test_verify_connection_gcloud_ssl_error(self, tmp_path):
+        """Test gcloud verification with SSL error."""
+        with patch('platform.system', return_value='Darwin'):
+            instance = fuwarp.FuwarpPython(mode='status')
+
+        with patch('subprocess.run') as mock_run, \
+             patch.object(instance, 'command_exists', return_value=True), \
+             patch('shutil.which', return_value='/usr/bin/gcloud'):
+
+            mock_run.return_value = MagicMock(
+                returncode=1,
+                stdout='',
+                stderr='SSL certificate problem: unable to get local issuer certificate'
+            )
+
+            result = instance.verify_connection("gcloud")
+
+            assert result == "FAILED"
+
+    def test_verify_connection_gcloud_non_ssl_error_is_ok(self, tmp_path):
+        """Test gcloud verification with non-SSL error (should be OK)."""
+        with patch('platform.system', return_value='Darwin'):
+            instance = fuwarp.FuwarpPython(mode='status')
+
+        with patch('subprocess.run') as mock_run, \
+             patch.object(instance, 'command_exists', return_value=True), \
+             patch('shutil.which', return_value='/usr/bin/gcloud'):
+
+            # Non-SSL error like "no account configured"
+            mock_run.return_value = MagicMock(
+                returncode=1,
+                stdout='',
+                stderr='ERROR: No account is set'
+            )
+
+            result = instance.verify_connection("gcloud")
+
+            # Non-SSL errors should be treated as "connectivity OK"
+            assert result == "WORKING"
+
+    def test_verify_connection_gcloud_not_installed(self, tmp_path):
+        """Test gcloud verification when not installed."""
+        with patch('platform.system', return_value='Darwin'):
+            instance = fuwarp.FuwarpPython(mode='status')
+
+        with patch.object(instance, 'command_exists', return_value=False):
+            result = instance.verify_connection("gcloud")
+
+            assert result == "NOT_INSTALLED"
+
+    def test_check_gcloud_status_working_no_custom_ca(self, tmp_path):
+        """Test gcloud status when working without custom CA."""
+        cert_file = tmp_path / "cert.pem"
+        cert_file.write_text(mock_data.MOCK_CERTIFICATE)
+
+        with patch('platform.system', return_value='Darwin'):
+            instance = fuwarp.FuwarpPython(mode='status')
+
+        with patch.object(instance, 'command_exists', return_value=True), \
+             patch.object(instance, 'verify_connection', return_value="WORKING"), \
+             patch('subprocess.run') as mock_run:
+
+            # gcloud config get-value returns empty (no custom CA)
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout='',
+                stderr=''
+            )
+
+            has_issues = instance.check_gcloud_status(str(cert_file))
+
+            # Should NOT have issues when gcloud works without custom CA
+            assert has_issues is False
+
+    def test_check_gcloud_status_failed_suggests_fix(self, tmp_path):
+        """Test gcloud status suggests fix when connection fails."""
+        cert_file = tmp_path / "cert.pem"
+        cert_file.write_text(mock_data.MOCK_CERTIFICATE)
+
+        with patch('platform.system', return_value='Darwin'):
+            instance = fuwarp.FuwarpPython(mode='status')
+
+        with patch.object(instance, 'command_exists', return_value=True), \
+             patch.object(instance, 'verify_connection', return_value="FAILED"), \
+             patch('subprocess.run') as mock_run:
+
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout='',
+                stderr=''
+            )
+
+            has_issues = instance.check_gcloud_status(str(cert_file))
+
+            assert has_issues is True
 
 
 if __name__ == '__main__':

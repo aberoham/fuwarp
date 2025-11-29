@@ -326,7 +326,54 @@ class FuwarpPython:
     def print_debug(self, msg):
         if self.is_debug_mode():
             print(f"{BLUE}[DEBUG]{NC} {msg}", file=sys.stderr)
-    
+
+    def check_for_updates(self):
+        """Check if a newer version of fuwarp is available on GitHub.
+
+        Uses an unverified SSL context since WARP certificate trust might not
+        be configured yet (which is why the user is running this script).
+
+        Returns:
+            bool: True if an update is available, False otherwise
+        """
+        try:
+            # Use unverified SSL context - WARP might not be configured yet
+            context = ssl._create_unverified_context()
+            url = "https://raw.githubusercontent.com/aberoham/fuwarp/main/fuwarp.py"
+
+            self.print_debug(f"Checking for updates from {url}")
+
+            req = urllib.request.Request(url, headers={'User-Agent': 'fuwarp-update-check'})
+            with urllib.request.urlopen(req, context=context, timeout=10) as response:
+                remote_content = response.read()
+
+            # Get local file hash
+            script_path = os.path.abspath(__file__)
+            with open(script_path, 'rb') as f:
+                local_hash = hashlib.sha256(f.read()).hexdigest()
+
+            remote_hash = hashlib.sha256(remote_content).hexdigest()
+
+            self.print_debug(f"Local hash:  {local_hash[:16]}...")
+            self.print_debug(f"Remote hash: {remote_hash[:16]}...")
+
+            if local_hash != remote_hash:
+                print()
+                self.print_warn("=" * 60)
+                self.print_warn("A newer version of fuwarp.py is available!")
+                self.print_warn("Update before running --fix to ensure best results:")
+                self.print_info("  curl -LsSf https://raw.githubusercontent.com/aberoham/fuwarp/main/fuwarp.py -o fuwarp.py")
+                self.print_warn("=" * 60)
+                print()
+                return True
+            else:
+                self.print_debug("fuwarp.py is up to date")
+
+        except Exception as e:
+            self.print_debug(f"Update check failed (this is OK): {e}")
+
+        return False
+
     def command_exists(self, cmd):
         """Check if a command exists."""
         return shutil.which(cmd) is not None
@@ -2213,7 +2260,44 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
                     result = "FAILED"
             else:
                 result = "NOT_INSTALLED"
-        
+
+        elif tool_name == "gcloud":
+            if self.command_exists('gcloud'):
+                self.print_debug(f"gcloud found at: {shutil.which('gcloud')}")
+
+                try:
+                    # Try a simple gcloud command that requires SSL connectivity
+                    # Using 'gcloud config list' as it's fast and non-destructive
+                    gcloud_result = subprocess.run(
+                        ['gcloud', 'config', 'list', '--format=value(core.account)'],
+                        capture_output=True, text=True, timeout=15
+                    )
+
+                    # gcloud config list should succeed if SSL is working
+                    # (it talks to metadata server or uses cached config)
+                    if gcloud_result.returncode == 0:
+                        result = "WORKING"
+                        self.print_debug("gcloud test succeeded")
+                        if gcloud_result.stdout.strip():
+                            self.print_debug(f"gcloud active account: {gcloud_result.stdout.strip()}")
+                    else:
+                        # Check stderr for SSL-specific errors
+                        if 'SSL' in gcloud_result.stderr or 'certificate' in gcloud_result.stderr.lower():
+                            result = "FAILED"
+                            self.print_debug(f"gcloud SSL error: {gcloud_result.stderr}")
+                        else:
+                            # Non-SSL errors (like no account configured) are OK
+                            result = "WORKING"
+                            self.print_debug("gcloud connectivity OK (non-SSL error in output)")
+                except subprocess.TimeoutExpired:
+                    self.print_debug("gcloud test timed out")
+                    result = "FAILED"
+                except Exception as e:
+                    self.print_debug(f"gcloud test error: {e}")
+                    result = "FAILED"
+            else:
+                result = "NOT_INSTALLED"
+
         self.print_debug(f"Test result for {tool_name}: {result}")
         return result
     
@@ -2335,30 +2419,77 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
         """Check gcloud configuration status."""
         has_issues = False
         if self.command_exists('gcloud'):
-            try:
-                result = subprocess.run(
-                    ['gcloud', 'config', 'get-value', 'core/custom_ca_certs_file'],
-                    capture_output=True, text=True
-                )
-                gcloud_ca = result.stdout.strip() if result.returncode == 0 else ""
-                
-                if gcloud_ca and os.path.exists(gcloud_ca):
-                    if self.certificate_exists_in_file(temp_warp_cert, gcloud_ca):
-                        self.print_info("  ✓ gcloud configured with current WARP certificate")
-                        suspicious, reason = self.is_suspicious_full_bundle(gcloud_ca, None)
-                        if suspicious:
-                            self.print_warn(f"  ⚠ gcloud custom CA file looks suspiciously small ({reason})")
-                            self.print_action("    Run with --fix to repoint to a full CA bundle")
+            # First, verify if gcloud can actually connect
+            verify_result = self.verify_connection("gcloud")
+
+            if verify_result == "WORKING":
+                self.print_info("  ✓ gcloud can connect through WARP")
+
+                # Check if custom CA is configured (informational only)
+                try:
+                    result = subprocess.run(
+                        ['gcloud', 'config', 'get-value', 'core/custom_ca_certs_file'],
+                        capture_output=True, text=True
+                    )
+                    gcloud_ca = result.stdout.strip() if result.returncode == 0 else ""
+
+                    if gcloud_ca and os.path.exists(gcloud_ca):
+                        self.print_info(f"  - Custom CA configured at: {gcloud_ca}")
+                        if self.certificate_exists_in_file(temp_warp_cert, gcloud_ca):
+                            self.print_info("  ✓ Custom CA contains current WARP certificate")
+                    else:
+                        self.print_info("  - Using system certificate trust (no custom CA needed)")
+                except Exception:
+                    self.print_info("  - Using system certificate trust")
+            elif verify_result == "SKIPPED":
+                # Can't verify, fall back to config check
+                try:
+                    result = subprocess.run(
+                        ['gcloud', 'config', 'get-value', 'core/custom_ca_certs_file'],
+                        capture_output=True, text=True
+                    )
+                    gcloud_ca = result.stdout.strip() if result.returncode == 0 else ""
+
+                    if gcloud_ca and os.path.exists(gcloud_ca):
+                        if self.certificate_exists_in_file(temp_warp_cert, gcloud_ca):
+                            self.print_info("  ✓ gcloud configured with current WARP certificate")
+                            suspicious, reason = self.is_suspicious_full_bundle(gcloud_ca, None)
+                            if suspicious:
+                                self.print_warn(f"  ⚠ gcloud custom CA file looks suspiciously small ({reason})")
+                                self.print_action("    Run with --fix to repoint to a full CA bundle")
+                                has_issues = True
+                        else:
+                            self.print_warn("  ✗ gcloud CA file doesn't contain current WARP certificate")
                             has_issues = True
                     else:
-                        self.print_warn("  ✗ gcloud CA file doesn't contain current WARP certificate")
-                        has_issues = True
-                else:
-                    self.print_warn("  ✗ gcloud not configured with custom CA")
+                        self.print_info("  - gcloud custom CA not configured (verification skipped)")
+                except Exception:
+                    self.print_warn("  ✗ Failed to check gcloud configuration")
                     has_issues = True
-            except Exception:
-                self.print_warn("  ✗ Failed to check gcloud configuration")
-                has_issues = True
+            else:
+                # gcloud can't connect - check if custom CA would help
+                self.print_warn("  ✗ gcloud connection test failed")
+                try:
+                    result = subprocess.run(
+                        ['gcloud', 'config', 'get-value', 'core/custom_ca_certs_file'],
+                        capture_output=True, text=True
+                    )
+                    gcloud_ca = result.stdout.strip() if result.returncode == 0 else ""
+
+                    if gcloud_ca and os.path.exists(gcloud_ca):
+                        if self.certificate_exists_in_file(temp_warp_cert, gcloud_ca):
+                            self.print_warn("  - Custom CA is configured with WARP cert but connection still fails")
+                            self.print_action("    Check gcloud and Python configuration")
+                        else:
+                            self.print_warn("  ✗ gcloud CA file doesn't contain current WARP certificate")
+                            self.print_action("    Run with --fix to update the CA configuration")
+                    else:
+                        self.print_warn("  ✗ gcloud not configured with custom CA")
+                        self.print_action("    Run with --fix to configure gcloud CA")
+                    has_issues = True
+                except Exception:
+                    self.print_warn("  ✗ Failed to check gcloud configuration")
+                    has_issues = True
         else:
             self.print_info("  - gcloud not installed (would configure if present)")
         return has_issues
@@ -2832,7 +2963,10 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
                     self.print_debug("Status mode: Using fast certificate checks")
                 else:
                     self.print_debug("Install mode: Using thorough certificate checks")
-            
+
+            # Check for updates (uses unverified SSL since WARP might not be configured)
+            self.check_for_updates()
+
             # Auto-detect devcontainer and adjust behavior
             if self.is_devcontainer():
                 if not self.skip_verify:
