@@ -134,8 +134,6 @@ CERT_PATH = os.path.expanduser("~/.cloudflare-ca.pem")
 # Heuristics for detecting misconfigured bundles that replace trust stores
 SMALL_BUNDLE_MAX_CERTS = 2
 SMALL_BUNDLE_MAX_SIZE_BYTES = 50 * 1024  # 50KB
-SHELL_MODIFIED = False
-CERT_FINGERPRINT = ""  # Cache for certificate fingerprint
 
 class FuwarpPython:
     def __init__(self, mode='status', debug=False, selected_tools=None, cert_file=None, manual_cert=False, skip_verify=False):
@@ -1583,6 +1581,9 @@ class FuwarpPython:
         subprocess.run(['git', 'config', '--global', 'http.sslCAInfo', git_bundle], capture_output=True, text=True)
         self.print_info(f"Configured git http.sslCAInfo to: {git_bundle}")
 
+    # TODO: This function is not registered in tools_registry and is never called.
+    # See https://github.com/aberoham/fuwarp/issues/27 for discussion on whether to
+    # properly register curl as a supported tool or remove this dead code.
     def setup_curl_cert(self):
         """Repoint CURL_CA_BUNDLE to a managed bundle if current setting is suspicious."""
         if not self.command_exists('curl'):
