@@ -2035,11 +2035,10 @@ class FuwarpPython:
         self.print_info("Configuring Colima certificate...")
         
         # Check if colima machine is running
+        # colima status returns exit code 0 when running, non-zero when stopped
         try:
             result = subprocess.run(['colima', 'status'], capture_output=True, text=True)
-            # Colima outputs status to stderr, not stdout
-            status_output = result.stdout + result.stderr
-            if 'running' not in status_output.lower():
+            if result.returncode != 0:
                 self.print_warn("No Colima machine is currently running")
                 self.print_info("Please start a Colima machine first with: colima start")
                 return
@@ -2724,10 +2723,9 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
         has_issues = False
         if self.command_exists('colima'):
             try:
+                # colima status returns exit code 0 when running, non-zero when stopped
                 result = subprocess.run(['colima', 'status'], capture_output=True, text=True)
-                # Colima outputs status to stderr, not stdout
-                status_output = result.stdout + result.stderr
-                if 'running' in status_output.lower():
+                if result.returncode == 0:
                     # Check if certificate exists in Colima VM
                     result = subprocess.run(
                         ['colima', 'ssh', '--', 'test', '-f', '/usr/local/share/ca-certificates/cloudflare-warp.crt'],
