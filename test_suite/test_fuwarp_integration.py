@@ -726,6 +726,91 @@ class TestCodeQuality:
             f"Use self.append_certificate_if_missing(cert_path, target_path) instead"
         )
 
+    def test_no_unused_globals_in_fuwarp(self):
+        """Ensure no unused global variables exist in fuwarp.py.
+
+        Regression test to prevent unused globals like SHELL_MODIFIED and
+        CERT_FINGERPRINT from being introduced (or reintroduced).
+        """
+        import os
+        import re
+
+        test_dir = os.path.dirname(os.path.abspath(__file__))
+        fuwarp_path = os.path.join(os.path.dirname(test_dir), "fuwarp.py")
+
+        with open(fuwarp_path, 'r') as f:
+            source = f.read()
+
+        # Find module-level UPPER_CASE variable assignments (globals)
+        # Pattern: line starts with UPPER_CASE_NAME = (not inside class/function)
+        global_pattern = re.compile(r'^([A-Z][A-Z0-9_]*)\s*=', re.MULTILINE)
+
+        globals_found = set()
+        for match in global_pattern.finditer(source):
+            name = match.group(1)
+            # Skip dunder variables (like __version__)
+            if name.startswith('__'):
+                continue
+            globals_found.add(name)
+
+        # Check each global is used somewhere else in the code
+        unused_globals = []
+        for name in globals_found:
+            # Count occurrences - should be more than 1 if used after definition
+            pattern = re.compile(r'\b' + re.escape(name) + r'\b')
+            matches = pattern.findall(source)
+            if len(matches) <= 1:
+                unused_globals.append(name)
+
+        assert not unused_globals, (
+            f"Unused global variables found in fuwarp.py: {unused_globals}\n"
+            "These variables are defined but never referenced elsewhere in the code."
+        )
+
+    def test_no_unused_globals_in_fuwarp_windows(self):
+        """Ensure no unused global variables exist in fuwarp_windows.py.
+
+        Same check as test_no_unused_globals_in_fuwarp but for Windows port.
+        """
+        import os
+        import re
+
+        test_dir = os.path.dirname(os.path.abspath(__file__))
+        fuwarp_windows_path = os.path.join(os.path.dirname(test_dir), "fuwarp_windows.py")
+
+        with open(fuwarp_windows_path, 'r') as f:
+            source = f.read()
+
+        # Known unused globals pending Windows refactoring
+        # See WINDOWS_REFACTORING_NOTES.md for cleanup plan
+        known_unused = {'ALT_CERT_NAMES', 'SHELL_MODIFIED', 'CERT_FINGERPRINT'}
+
+        # Find module-level UPPER_CASE variable assignments (globals)
+        global_pattern = re.compile(r'^([A-Z][A-Z0-9_]*)\s*=', re.MULTILINE)
+
+        globals_found = set()
+        for match in global_pattern.finditer(source):
+            name = match.group(1)
+            if name.startswith('__'):
+                continue
+            globals_found.add(name)
+
+        # Check each global is used somewhere else in the code
+        unused_globals = []
+        for name in globals_found:
+            # Skip known unused globals (tracked for future cleanup)
+            if name in known_unused:
+                continue
+            pattern = re.compile(r'\b' + re.escape(name) + r'\b')
+            matches = pattern.findall(source)
+            if len(matches) <= 1:
+                unused_globals.append(name)
+
+        assert not unused_globals, (
+            f"Unused global variables found in fuwarp_windows.py: {unused_globals}\n"
+            "These variables are defined but never referenced elsewhere in the code."
+        )
+
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
