@@ -4,9 +4,14 @@ Integration tests for fuwarp_windows.py
 These tests verify the Windows port's functionality, particularly the
 certificate appending logic and newline handling fix for issue #13.
 """
+import sys
 import re
 import pytest
 from unittest.mock import patch
+
+# Skip entire module on non-Windows platforms
+if sys.platform != 'win32':
+    pytest.skip("Windows-only tests", allow_module_level=True)
 
 # Import test utilities
 from helpers import import_fuwarp_windows
@@ -227,6 +232,102 @@ class TestWindowsBasicFunctionality:
 
             instance = fuwarp_windows.FuwarpWindows(mode='status', debug=False)
             assert instance.is_debug_mode() is False
+
+
+class TestStatusFunctionContractsWindows:
+    """Contract tests for all check_*_status() functions in Windows port.
+
+    These tests verify that all status check functions return a boolean value,
+    preventing bugs like issue #20 where a function forgot to return has_issues.
+    """
+
+    def get_all_status_methods(self, instance):
+        """Discover all check_*_status methods via introspection.
+
+        Excludes check_all_status() which is the orchestrator method.
+        """
+        return [
+            name for name in dir(instance)
+            if name.startswith('check_') and name.endswith('_status')
+            and name != 'check_all_status'  # Exclude orchestrator
+            and callable(getattr(instance, name))
+        ]
+
+    def test_all_status_functions_return_boolean(self, tmp_path):
+        """Ensure all check_*_status() functions return a boolean (not None).
+
+        Regression test for issue #20 - prevents forgetting return statements.
+        This test automatically discovers all check_*_status methods and verifies
+        each returns a proper boolean value.
+        """
+        # Create a temporary cert file for the status checks
+        cert_file = tmp_path / "test-cert.pem"
+        cert_file.write_text(mock_data.MOCK_CERTIFICATE)
+
+        with patch('platform.system', return_value='Windows'):
+            instance = fuwarp_windows.FuwarpWindows(mode='status')
+
+        status_methods = self.get_all_status_methods(instance)
+
+        # Verify we found the expected methods (sanity check)
+        assert len(status_methods) >= 8, f"Expected at least 8 status methods, found {len(status_methods)}: {status_methods}"
+
+        # Expected methods based on the Windows codebase
+        expected_methods = [
+            'check_system_status', 'check_node_status', 'check_python_status',
+            'check_gcloud_status', 'check_java_status', 'check_wget_status',
+            'check_podman_status', 'check_rancher_status', 'check_git_status'
+        ]
+        for expected in expected_methods:
+            assert expected in status_methods, f"Expected method {expected} not found"
+
+        # Test each status method
+        failed_methods = []
+        for method_name in status_methods:
+            method = getattr(instance, method_name)
+
+            # Mock all external dependencies so functions hit early returns
+            with patch.object(instance, 'command_exists', return_value=False), \
+                 patch.object(instance, 'check_certificate_in_store', return_value=False), \
+                 patch('os.path.exists', return_value=False), \
+                 patch('os.environ.get', return_value=''):
+
+                result = method(str(cert_file))
+
+                if result is None:
+                    failed_methods.append(f"{method_name} returned None")
+                elif not isinstance(result, bool):
+                    failed_methods.append(f"{method_name} returned {type(result).__name__}, not bool")
+
+        assert not failed_methods, "Status function contract violations:\n" + "\n".join(failed_methods)
+
+    def test_status_functions_return_false_when_tool_not_installed(self, tmp_path):
+        """Verify status functions return False (no issues) when tool is not installed."""
+        cert_file = tmp_path / "test-cert.pem"
+        cert_file.write_text(mock_data.MOCK_CERTIFICATE)
+
+        with patch('platform.system', return_value='Windows'):
+            instance = fuwarp_windows.FuwarpWindows(mode='status')
+
+        # Get methods excluding check_system_status (it always checks Windows store)
+        status_methods = [
+            m for m in self.get_all_status_methods(instance)
+            if m != 'check_system_status'  # System status always runs
+        ]
+
+        for method_name in status_methods:
+            method = getattr(instance, method_name)
+
+            # Mock tool as not installed
+            with patch.object(instance, 'command_exists', return_value=False), \
+                 patch.object(instance, 'check_certificate_in_store', return_value=True), \
+                 patch('os.path.exists', return_value=False), \
+                 patch('os.environ.get', return_value=''):
+
+                result = method(str(cert_file))
+
+                # When tool is not installed, there should be no issues to report
+                assert result is False, f"{method_name} should return False when tool not installed, got {result}"
 
 
 if __name__ == '__main__':

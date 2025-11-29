@@ -2528,6 +2528,8 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
                 self.print_warn(f"    ✗ {version_name}: Failed to check keystore")
                 has_issues = True
 
+        return has_issues
+
     def check_gradle_status(self, temp_warp_cert):
         """Check Gradle configuration status."""
         has_issues = False
