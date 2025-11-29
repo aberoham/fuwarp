@@ -633,5 +633,99 @@ class TestCertificateAppending(FuwarpTestCase):
         assert "-----END CERTIFICATE-----" in content
 
 
+class TestCodeQuality:
+    """Static analysis tests to catch unsafe patterns in the codebase."""
+
+    def test_no_unsafe_certificate_appends_in_fuwarp(self):
+        """Ensure fuwarp.py uses safe_append_certificate() for all certificate appends.
+
+        Regression test for issue #21 - prevents adding new unsafe certificate
+        appends that could produce malformed PEM files.
+
+        Unsafe patterns detected:
+        - Direct file opens with 'a' mode for certificate/bundle files
+        - Writing certificate content without using safe_append_certificate()
+        """
+        import os
+        import re
+
+        # Read the source file
+        test_dir = os.path.dirname(os.path.abspath(__file__))
+        fuwarp_path = os.path.join(os.path.dirname(test_dir), "fuwarp.py")
+
+        with open(fuwarp_path, 'r') as f:
+            source = f.read()
+
+        # Pattern 1: Direct append mode opens for bundle/cert files
+        # This catches: with open(some_bundle, 'a') as f:
+        unsafe_append_pattern = re.compile(
+            r"with\s+open\s*\([^)]*(?:bundle|cert|ca)[^)]*['\"]a['\"]\s*\)\s*as",
+            re.IGNORECASE
+        )
+
+        matches = unsafe_append_pattern.findall(source)
+        assert not matches, (
+            f"Found unsafe certificate append patterns in fuwarp.py:\n"
+            f"{matches}\n\n"
+            f"Use self.safe_append_certificate(cert_path, target_path) instead"
+        )
+
+        # Pattern 2: Direct f.write() of certificate content to append
+        # This catches patterns like: f.write(cf.read()) where cf is a cert file
+        unsafe_write_pattern = re.compile(
+            r"f\.write\s*\(\s*(?:cf|cert_file|CERT).*\.read\s*\(\s*\)\s*\)"
+        )
+
+        matches = unsafe_write_pattern.findall(source)
+        assert not matches, (
+            f"Found unsafe certificate write patterns in fuwarp.py:\n"
+            f"{matches}\n\n"
+            f"Use self.safe_append_certificate(cert_path, target_path) instead"
+        )
+
+    def test_no_unsafe_certificate_appends_in_fuwarp_windows(self):
+        """Ensure fuwarp_windows.py uses append_certificate_if_missing() for all appends.
+
+        Same as test_no_unsafe_certificate_appends_in_fuwarp but for Windows port.
+        """
+        import os
+        import re
+
+        # Read the source file
+        test_dir = os.path.dirname(os.path.abspath(__file__))
+        fuwarp_windows_path = os.path.join(os.path.dirname(test_dir), "fuwarp_windows.py")
+
+        with open(fuwarp_windows_path, 'r') as f:
+            source = f.read()
+
+        # Pattern 1: Direct append mode opens for bundle/cert files
+        # Exclude the append_certificate_if_missing implementation itself
+        lines = source.split('\n')
+        in_append_method = False
+        unsafe_lines = []
+
+        for i, line in enumerate(lines, 1):
+            # Track when we're inside append_certificate_if_missing
+            if 'def append_certificate_if_missing' in line:
+                in_append_method = True
+            elif in_append_method and line.strip().startswith('def '):
+                in_append_method = False
+
+            # Skip the implementation of the safe method
+            if in_append_method:
+                continue
+
+            # Check for unsafe patterns
+            if re.search(r"with\s+open\s*\([^)]*['\"]a['\"]\s*\)", line, re.IGNORECASE):
+                if 'bundle' in line.lower() or 'cert' in line.lower() or 'ca' in line.lower():
+                    unsafe_lines.append(f"Line {i}: {line.strip()}")
+
+        assert not unsafe_lines, (
+            f"Found unsafe certificate append patterns in fuwarp_windows.py:\n"
+            + "\n".join(unsafe_lines) + "\n\n"
+            f"Use self.append_certificate_if_missing(cert_path, target_path) instead"
+        )
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
