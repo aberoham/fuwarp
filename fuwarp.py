@@ -2266,29 +2266,29 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
                 self.print_debug(f"gcloud found at: {shutil.which('gcloud')}")
 
                 try:
-                    # Try a simple gcloud command that requires SSL connectivity
-                    # Using 'gcloud config list' as it's fast and non-destructive
+                    # Use 'gcloud projects list --limit=1' which makes a real HTTPS call
+                    # to GCP APIs. This verifies TLS connectivity even if the user lacks
+                    # permissions or isn't authenticated - we just need the SSL handshake
+                    # to succeed.
                     gcloud_result = subprocess.run(
-                        ['gcloud', 'config', 'list', '--format=value(core.account)'],
+                        ['gcloud', 'projects', 'list', '--limit=1'],
                         capture_output=True, text=True, timeout=15
                     )
 
-                    # gcloud config list should succeed if SSL is working
-                    # (it talks to metadata server or uses cached config)
-                    if gcloud_result.returncode == 0:
-                        result = "WORKING"
-                        self.print_debug("gcloud test succeeded")
-                        if gcloud_result.stdout.strip():
-                            self.print_debug(f"gcloud active account: {gcloud_result.stdout.strip()}")
+                    # Check for SSL-specific errors in stderr
+                    stderr_lower = gcloud_result.stderr.lower()
+                    if 'ssl' in stderr_lower or 'certificate' in stderr_lower:
+                        result = "FAILED"
+                        self.print_debug(f"gcloud SSL error: {gcloud_result.stderr}")
                     else:
-                        # Check stderr for SSL-specific errors
-                        if 'SSL' in gcloud_result.stderr or 'certificate' in gcloud_result.stderr.lower():
-                            result = "FAILED"
-                            self.print_debug(f"gcloud SSL error: {gcloud_result.stderr}")
+                        # Any response (success, permission denied, not authenticated)
+                        # means TLS connectivity is working
+                        result = "WORKING"
+                        if gcloud_result.returncode == 0:
+                            self.print_debug("gcloud API call succeeded")
                         else:
-                            # Non-SSL errors (like no account configured) are OK
-                            result = "WORKING"
-                            self.print_debug("gcloud connectivity OK (non-SSL error in output)")
+                            self.print_debug("gcloud API call returned error (but TLS works)")
+                            self.print_debug(f"gcloud stderr: {gcloud_result.stderr.strip()[:100]}")
                 except subprocess.TimeoutExpired:
                     self.print_debug("gcloud test timed out")
                     result = "FAILED"

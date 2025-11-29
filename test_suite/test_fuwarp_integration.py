@@ -1275,7 +1275,7 @@ class TestGcloudVerification(FuwarpTestCase):
     """Tests for gcloud verification functionality."""
 
     def test_verify_connection_gcloud_working(self, tmp_path):
-        """Test gcloud verification when connection works."""
+        """Test gcloud verification when API call succeeds."""
         with patch('platform.system', return_value='Darwin'):
             instance = fuwarp.FuwarpPython(mode='status')
 
@@ -1283,9 +1283,10 @@ class TestGcloudVerification(FuwarpTestCase):
              patch.object(instance, 'command_exists', return_value=True), \
              patch('shutil.which', return_value='/usr/bin/gcloud'):
 
+            # Successful 'gcloud projects list --limit=1' response
             mock_run.return_value = MagicMock(
                 returncode=0,
-                stdout='user@example.com\n',
+                stdout='PROJECT_ID\nmy-project\n',
                 stderr=''
             )
 
@@ -1312,8 +1313,8 @@ class TestGcloudVerification(FuwarpTestCase):
 
             assert result == "FAILED"
 
-    def test_verify_connection_gcloud_non_ssl_error_is_ok(self, tmp_path):
-        """Test gcloud verification with non-SSL error (should be OK)."""
+    def test_verify_connection_gcloud_permission_error_is_ok(self, tmp_path):
+        """Test gcloud verification with permission error (TLS still works)."""
         with patch('platform.system', return_value='Darwin'):
             instance = fuwarp.FuwarpPython(mode='status')
 
@@ -1321,16 +1322,16 @@ class TestGcloudVerification(FuwarpTestCase):
              patch.object(instance, 'command_exists', return_value=True), \
              patch('shutil.which', return_value='/usr/bin/gcloud'):
 
-            # Non-SSL error like "no account configured"
+            # Permission denied error - TLS handshake succeeded
             mock_run.return_value = MagicMock(
                 returncode=1,
                 stdout='',
-                stderr='ERROR: No account is set'
+                stderr='ERROR: (gcloud.projects.list) User does not have permission'
             )
 
             result = instance.verify_connection("gcloud")
 
-            # Non-SSL errors should be treated as "connectivity OK"
+            # Non-SSL errors mean TLS connectivity is working
             assert result == "WORKING"
 
     def test_verify_connection_gcloud_not_installed(self, tmp_path):
