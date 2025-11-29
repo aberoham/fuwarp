@@ -38,9 +38,25 @@ fuwarp (Cloudflare WARP Certificate Fixer Upper) is a Python script that automat
 
 ### Testing
 
-The script doesn't have a formal test suite. Manual testing involves:
-- Running in status mode to verify detection: `./fuwarp.py`
-- Running with `--fix` to test installation on different tool configurations
+The project has a pytest-based test suite in `test_suite/`:
+
+```bash
+# Run all tests
+cd test_suite
+source .venv/bin/activate  # or create with: uv venv && uv pip install -r requirements.txt
+python -m pytest test_fuwarp_integration.py -v
+
+# Run specific test classes
+python -m pytest test_fuwarp_integration.py::TestStatusFunctionContracts -v
+python -m pytest test_fuwarp_integration.py::TestCodeQuality -v
+```
+
+Key test categories:
+- **TestCertificateManagement**: Certificate download and validation
+- **TestToolSetup**: Tool-specific certificate setup workflows
+- **TestStatusFunctionContracts**: Ensures all `check_*_status()` functions return booleans
+- **TestCodeQuality**: Static analysis to catch unsafe certificate append patterns
+- **TestCertificateAppending**: Tests for safe PEM file handling (issue #13 fix)
 
 ## Architecture Overview
 
@@ -57,7 +73,7 @@ The script follows a modular architecture with these key components:
    - Each supported tool has its own `setup_*_cert()` function
    - Functions check current configuration before making changes
    - Handle permission issues by suggesting user-writable alternatives
-   - Support for: Node.js/npm, Python, gcloud, Java/JVM, DBeaver, wget, Podman, Rancher, Android Emulator
+   - Support for: Node.js/npm, Python, gcloud, Git, curl, Java/JVM, jenv, Gradle, DBeaver, wget, Podman, Rancher, Colima, Android Emulator
    - Tools can be selectively processed using `--tools` option with keys or tags
 
 4. **Certificate Verification**:

@@ -19,7 +19,7 @@ from pathlib import Path
 from datetime import datetime
 
 # Version and metadata
-__description__ = "Cloudflare WARP Certificate Fixer Upper for macOS"
+__description__ = "Cloudflare WARP Certificate Fixer Upper for macOS and Linux"
 __author__ = "Ingersoll & Claude"
 
 
@@ -2871,7 +2871,6 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
             self.print_status("Additional Tools (not yet automated):")
             self.print_info("  - RubyGems/Bundler: May work with SSL_CERT_FILE environment variable")
             self.print_info("  - PHP/Composer: May need CURL_CA_BUNDLE and php.ini configuration")
-            self.print_info("  - Git: May need 'git config --global http.sslCAInfo' setting")
             self.print_info("  - Firefox: Uses its own certificate store in profile")
             self.print_info("  - Other Homebrew tools: May need individual configuration")
             print()

@@ -98,11 +98,15 @@ Something amiss or not quite right? Please post the full output of a run to an i
 - **Node.js/npm**: configures `NODE_EXTRA_CA_CERTS` for Node.js and the cafile setting for npm
 - **Python**: sets the `REQUESTS_CA_BUNDLE`, `SSL_CERT_FILE`, and `CURL_CA_BUNDLE` environment variables
 - **gcloud**: configures the `core/custom_ca_certs_file` for the Google Cloud `gcloud` CLI
+- **Git**: configures Git to use the custom certificate bundle via `http.sslCAInfo`
+- **curl**: configures `CURL_CA_BUNDLE` environment variable for curl
 - **Java/JVM**: adds the Cloudflare certificate to any found Java keystore (cacerts)
+- **jenv**: adds the Cloudflare certificate to all jenv-managed Java installations
 - **DBeaver**: targets the bundled JRE and adds the certificate to its keystore
 - **wget**: configures the `ca_certificate` in the `.wgetrc` file
 - **Podman**: installs certificate in Podman VM's trust store
 - **Rancher Desktop**: installs certificate in Rancher VM's trust store
+- **Colima**: installs certificate in Colima VM's trust store
 - **Android Emulator**: helps install certificate on running Android emulators
 - **Gradle**: sets `systemProp` entries in `gradle.properties` (respecting `GRADLE_USER_HOME`) for the WARP certificate.
  
