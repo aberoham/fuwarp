@@ -100,9 +100,9 @@ Something amiss or not quite right? Please post the full output of a run to an i
 - **jenv**: adds the Cloudflare certificate to all jenv-managed Java installations
 - **DBeaver**: targets the bundled JRE and adds the certificate to its keystore
 - **wget**: configures the `ca_certificate` in the `.wgetrc` file
-- **Podman**: installs certificate in Podman VM's trust store
-- **Rancher Desktop**: installs certificate in Rancher VM's trust store
-- **Colima**: installs certificate in Colima VM's trust store
+- **Podman**: installs certificate in `~/.docker/certs.d/` (persistent) and Podman VM's trust store (if running)
+- **Rancher Desktop**: installs certificate in `~/.docker/certs.d/` (persistent) and Rancher VM's trust store (if running)
+- **Colima**: installs certificate in `~/.docker/certs.d/` (persistent, applied on start) and Colima VM's trust store (if running)
 - **Android Emulator**: helps install certificate on running Android emulators
 - **Gradle**: sets `systemProp` entries in `gradle.properties` (respecting `GRADLE_USER_HOME`) for the WARP certificate.
  

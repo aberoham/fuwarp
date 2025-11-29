@@ -18,8 +18,29 @@ on:
   workflow_dispatch:  # Allow manual triggering
 
 jobs:
+  # Detect which files changed to conditionally run platform-specific tests
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      fuwarp: ${{ steps.filter.outputs.fuwarp }}
+      fuwarp_windows: ${{ steps.filter.outputs.fuwarp_windows }}
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dorny/paths-filter@v3
+      id: filter
+      with:
+        filters: |
+          fuwarp:
+            - 'fuwarp.py'
+            - 'test_suite/test_fuwarp_integration.py'
+          fuwarp_windows:
+            - 'fuwarp_windows.py'
+            - 'test_suite/test_fuwarp_windows.py'
+
   test-macos:
     runs-on: macos-latest
+    needs: changes
+    if: needs.changes.outputs.fuwarp == 'true' || github.event_name == 'workflow_dispatch'
 
     steps:
     - uses: actions/checkout@v4
@@ -47,7 +68,8 @@ jobs:
 
   test-linux:
     runs-on: ubuntu-latest
-    needs: test-macos  # Only run after macOS tests pass
+    needs: [changes, test-macos]  # Only run after macOS tests pass
+    if: needs.changes.outputs.fuwarp == 'true' || github.event_name == 'workflow_dispatch'
 
     steps:
     - uses: actions/checkout@v4
@@ -75,7 +97,9 @@ jobs:
 
   test-windows:
     runs-on: windows-latest
-    needs: test-macos  # Only run after macOS tests pass
+    needs: [changes, test-macos]  # Only run after macOS tests pass
+    # Only run when fuwarp_windows.py or its tests change
+    if: needs.changes.outputs.fuwarp_windows == 'true' || github.event_name == 'workflow_dispatch'
 
     steps:
     - uses: actions/checkout@v4
