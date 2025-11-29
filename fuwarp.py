@@ -1183,10 +1183,7 @@ class FuwarpPython:
                             shutil.copy("/etc/ssl/certs/ca-certificates.crt", npm_bundle)
                         else:
                             Path(npm_bundle).touch()
-                        if not self.certificate_exists_in_file(CERT_PATH, npm_bundle):
-                            with open(npm_bundle, 'a') as f:
-                                with open(CERT_PATH, 'r') as cf:
-                                    f.write(cf.read())
+                        self.safe_append_certificate(CERT_PATH, npm_bundle)
                         subprocess.run(['npm', 'config', 'set', 'cafile', npm_bundle])
                         self.print_info(f"Repointed npm cafile to managed bundle: {npm_bundle}")
                     return
@@ -1369,10 +1366,7 @@ class FuwarpPython:
                                 shutil.copy("/etc/ssl/certs/ca-certificates.crt", python_bundle)
                             else:
                                 Path(python_bundle).touch()
-                            if not self.certificate_exists_in_file(CERT_PATH, python_bundle):
-                                with open(python_bundle, 'a') as f:
-                                    with open(CERT_PATH, 'r') as cf:
-                                        f.write(cf.read())
+                            self.safe_append_certificate(CERT_PATH, python_bundle)
                             self.add_to_shell_config("REQUESTS_CA_BUNDLE", python_bundle, shell_config)
                             self.add_to_shell_config("SSL_CERT_FILE", python_bundle, shell_config)
                             self.add_to_shell_config("CURL_CA_BUNDLE", python_bundle, shell_config)
@@ -1467,10 +1461,7 @@ class FuwarpPython:
                         shutil.copy("/etc/ssl/certs/ca-certificates.crt", gcloud_bundle)
                     else:
                         Path(gcloud_bundle).touch()
-                    if not self.certificate_exists_in_file(CERT_PATH, gcloud_bundle):
-                        with open(gcloud_bundle, 'a') as f:
-                            with open(CERT_PATH, 'r') as cf:
-                                f.write(cf.read())
+                    self.safe_append_certificate(CERT_PATH, gcloud_bundle)
                     subprocess.run(['gcloud', 'config', 'set', 'core/custom_ca_certs_file', gcloud_bundle], capture_output=True, timeout=30)
                     self.print_info(f"Repointed gcloud custom CA file to managed bundle: {gcloud_bundle}")
                 return
@@ -1588,10 +1579,7 @@ class FuwarpPython:
             shutil.copy("/etc/ssl/certs/ca-certificates.crt", git_bundle)
         else:
             Path(git_bundle).touch()
-        if not self.certificate_exists_in_file(CERT_PATH, git_bundle):
-            with open(git_bundle, 'a') as f:
-                with open(CERT_PATH, 'r') as cf:
-                    f.write(cf.read())
+        self.safe_append_certificate(CERT_PATH, git_bundle)
         subprocess.run(['git', 'config', '--global', 'http.sslCAInfo', git_bundle], capture_output=True, text=True)
         self.print_info(f"Configured git http.sslCAInfo to: {git_bundle}")
 
@@ -1620,10 +1608,7 @@ class FuwarpPython:
                 shutil.copy("/etc/ssl/certs/ca-certificates.crt", curl_bundle)
             else:
                 Path(curl_bundle).touch()
-            if not self.certificate_exists_in_file(CERT_PATH, curl_bundle):
-                with open(curl_bundle, 'a') as f:
-                    with open(CERT_PATH, 'r') as cf:
-                        f.write(cf.read())
+            self.safe_append_certificate(CERT_PATH, curl_bundle)
             shell_type = self.detect_shell()
             shell_config = self.get_shell_config(shell_type)
             self.add_to_shell_config("CURL_CA_BUNDLE", curl_bundle, shell_config)
