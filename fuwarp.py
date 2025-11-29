@@ -513,33 +513,24 @@ class FuwarpPython:
         return True
     
     def certificate_likely_exists_in_file(self, cert_file, target_file):
-        """Fast certificate check using grep (for status mode)."""
+        """Fast certificate check using pure Python string matching.
+
+        This function uses no subprocess calls for performance. It extracts
+        the first 100 characters of base64 content from the certificate and
+        searches for that unique portion in the target file.
+
+        Args:
+            cert_file: Path to the certificate to search for
+            target_file: Path to the bundle file to search in
+
+        Returns:
+            bool: True if certificate likely exists in target file
+        """
         if not os.path.exists(target_file) or not os.path.exists(cert_file):
             return False
-        
-        # Method 1: Try to match by subject CN
+
         try:
-            result = subprocess.run(
-                ['openssl', 'x509', '-in', cert_file, '-noout', '-subject'],
-                capture_output=True, text=True
-            )
-            if result.returncode == 0:
-                # Extract CN
-                subject = result.stdout.strip()
-                if 'CN=' in subject:
-                    cn_start = subject.find('CN=')
-                    cn_end = subject.find(',', cn_start) if ',' in subject[cn_start:] else len(subject)
-                    cn = subject[cn_start:cn_end]
-                    
-                    with open(target_file, 'r') as f:
-                        if cn in f.read():
-                            self.print_debug(f"Certificate likely exists in {target_file} (found matching CN: {cn})")
-                            return True
-        except Exception as e:
-            self.print_debug(f"Error checking CN: {e}")
-        
-        # Method 2: Try to match certificate content
-        try:
+            # Extract base64 content from cert file (skip BEGIN/END markers)
             with open(cert_file, 'r') as f:
                 cert_lines = []
                 in_cert = False
@@ -550,75 +541,48 @@ class FuwarpPython:
                         in_cert = False
                     elif in_cert:
                         cert_lines.append(line.strip())
-                
-                if cert_lines:
-                    # Get first 100 chars of cert content
-                    cert_content = ''.join(cert_lines)[:100]
-                    
-                    with open(target_file, 'r') as tf:
-                        target_content = tf.read()
-                        # Remove all whitespace for comparison
-                        target_normalized = ''.join(target_content.split())
-                        if cert_content.replace('\n', '').replace(' ', '') in target_normalized:
-                            self.print_debug(f"Certificate likely exists in {target_file} (found matching content)")
-                            return True
+
+                if not cert_lines:
+                    return False
+
+                # Get first 100 chars of base64 content - enough to be unique
+                cert_unique_portion = ''.join(cert_lines)[:100]
+
+            # Search for this unique portion in target file
+            with open(target_file, 'r') as tf:
+                target_content = tf.read()
+                # Normalize whitespace for comparison
+                target_normalized = ''.join(target_content.split())
+
+                if cert_unique_portion in target_normalized:
+                    self.print_debug(f"Certificate likely exists in {target_file} (found matching content)")
+                    return True
+
         except Exception as e:
-            self.print_debug(f"Error checking content: {e}")
-        
+            self.print_debug(f"Error checking certificate content: {e}")
+
         return False
     
     def certificate_exists_in_file(self, cert_file, target_file):
-        """Check if a certificate already exists in a file (thorough check for install mode)."""
-        if not os.path.exists(target_file):
-            return False
-        
-        # In status mode, use the fast check
-        if not self.is_install_mode():
-            return self.certificate_likely_exists_in_file(cert_file, target_file)
-        
-        # Get cached fingerprint
-        cert_fingerprint = self.get_cert_fingerprint(cert_file)
-        if not cert_fingerprint:
-            return False
-        
-        # For install mode, do the thorough check
-        try:
-            with open(target_file, 'r') as f:
-                content = f.read()
-                
-            # Split content into certificates
-            certs = []
-            current_cert = []
-            in_cert = False
-            
-            for line in content.splitlines():
-                if '-----BEGIN CERTIFICATE-----' in line:
-                    in_cert = True
-                    current_cert = [line]
-                elif '-----END CERTIFICATE-----' in line:
-                    current_cert.append(line)
-                    if in_cert:
-                        certs.append('\n'.join(current_cert))
-                    in_cert = False
-                    current_cert = []
-                elif in_cert:
-                    current_cert.append(line)
-            
-            # Check each certificate
-            for cert in certs:
-                with tempfile.NamedTemporaryFile(mode='w', suffix='.pem', delete=False) as tf:
-                    tf.write(cert)
-                    tf.flush()
-                    
-                    file_fingerprint = self.get_cert_fingerprint(tf.name)
-                    os.unlink(tf.name)
-                    
-                    if file_fingerprint == cert_fingerprint:
-                        return True
-        except Exception as e:
-            self.print_debug(f"Error checking certificate existence: {e}")
-        
-        return False
+        """Check if a certificate already exists in a file.
+
+        Uses fast pure-Python string matching for performance. The previous
+        fingerprint-based comparison was O(N) in subprocess calls where N is
+        the number of certificates in the target file. The string matching
+        approach is O(1) and sufficient for duplicate detection.
+
+        Args:
+            cert_file: Path to the certificate to search for
+            target_file: Path to the bundle file to search in
+
+        Returns:
+            bool: True if certificate exists in target file
+        """
+        # Use the fast pure-Python check for all modes
+        # This is sufficient because:
+        # 1. False negatives (cert exists but not found) -> duplicate appended, harmless
+        # 2. False positives (cert not there but found) -> extremely unlikely with 100-char match
+        return self.certificate_likely_exists_in_file(cert_file, target_file)
 
     def count_certificates_in_file(self, path):
         """Count the number of PEM certificates in a file."""

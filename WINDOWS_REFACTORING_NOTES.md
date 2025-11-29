@@ -42,6 +42,22 @@ The `create_bundle_with_system_certs()` helper was implemented in fuwarp.py:
 - Apply same pattern to fuwarp_windows.py
 - Check with: `grep -n "except:" fuwarp_windows.py | grep -v "Exception"`
 
+### 5. Performance: Pure Python Certificate Matching (PR #30)
+The `certificate_likely_exists_in_file()` function was refactored to use no subprocess calls:
+- **Before**: Used `openssl x509 -subject` to extract CN, then string search (1 subprocess call)
+- **After**: Pure Python extraction of first 100 chars of base64 content (0 subprocess calls)
+- Apply same pattern to fuwarp_windows.py
+
+The `certificate_exists_in_file()` function was simplified:
+- **Before**: In install mode, iterated through all certs in bundle and compared fingerprints via openssl (O(N) subprocess calls)
+- **After**: Delegates to `certificate_likely_exists_in_file()` for all modes (O(1), no subprocess)
+- Rationale: Fast string matching is sufficient; false negatives (duplicate appended) are harmless
+
+New regression tests added:
+- `test_certificate_likely_exists_uses_no_subprocess`
+- `test_no_subprocess_explosion_for_large_bundles`
+- `test_safe_append_uses_fast_check`
+
 ## Windows-Specific Considerations
 
 - Windows uses different system certificate paths
