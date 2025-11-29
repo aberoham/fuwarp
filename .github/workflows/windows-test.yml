@@ -51,7 +51,7 @@ jobs:
 
         # Test direct script execution (not as a module import)
         python fuwarp_windows.py --help
-        python fuwarp_windows.py --version
+        python fuwarp_windows.py --list-tools
 
     - name: Test in status mode (read-only)
       shell: pwsh
