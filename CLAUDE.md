@@ -24,9 +24,6 @@ fuwarp (Cloudflare WARP Certificate Fixer Upper) is a Python script that automat
 # Show help
 ./fuwarp.py --help
 
-# Show version information
-./fuwarp.py --version
-
 # List all available tools and their tags
 ./fuwarp.py --list-tools
 
@@ -62,6 +59,10 @@ Key test categories:
   - No bare `except:` clauses (use `except Exception:`)
 - **TestBundleCreation**: Tests for `create_bundle_with_system_certs()` helper
 - **TestCertificateAppending**: Tests for safe PEM file handling (issue #13 fix)
+- **TestPerformance**: Ensures subprocess call limits aren't exceeded
+- **TestCertificateContentMatching**: Tests for pure-Python certificate matching
+- **TestUpdateCheck**: Tests for the auto-update check functionality
+- **TestGcloudVerification**: Tests for gcloud connectivity verification
 
 ## Architecture Overview
 
@@ -84,12 +85,18 @@ The script follows a modular architecture with these key components:
 4. **Certificate Helpers**:
    - `create_bundle_with_system_certs(path)`: Creates a CA bundle initialized with system certificates from `/etc/ssl/cert.pem` (macOS) or `/etc/ssl/certs/ca-certificates.crt` (Linux)
    - `safe_append_certificate(cert, target)`: Safely appends a certificate to a bundle file, ensuring proper PEM formatting
-   - `certificate_exists_in_file()`: Checks if certificate already exists in bundle files
-   - `verify_connection()`: Tests if tools can connect through WARP
+   - `certificate_exists_in_file()`: Checks if certificate already exists in bundle files (uses pure-Python string matching for O(1) performance)
+   - `verify_connection()`: Tests if tools can connect through WARP (supports node, python, curl, wget, gcloud)
 
 5. **Status Checking**:
    - `check_all_status()`: Comprehensive status report of all configurations
    - Shows what needs fixing without making changes
+   - Verifies actual connectivity before flagging issues (e.g., gcloud may work via system trust store without custom CA)
+
+6. **Update Checking**:
+   - `check_for_updates()`: Compares local file hash against GitHub main branch
+   - Uses unverified SSL context (since WARP certificate trust might not be configured yet)
+   - Warns users to update before running `--fix` if a newer version is available
 
 ## Key Implementation Details
 

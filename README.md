@@ -44,9 +44,6 @@ python fuwarp_windows.py --list-tools
 python fuwarp_windows.py --debug
 python fuwarp_windows.py --verbose
 
-# Show version information
-python fuwarp_windows.py --version
-
 # Show help and all available commands
 python fuwarp_windows.py --help
 ```
@@ -59,7 +56,6 @@ python fuwarp_windows.py --help
   - Examples: `--tools node --tools python` or `--tools node,gcloud`
 - `--list-tools` - List all available tools and their tags
 - `--debug, --verbose` - Show detailed debug information
-- `--version` - Show program's version number and exit
 
 ## FU Warp Rational
 

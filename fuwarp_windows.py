@@ -2673,9 +2673,6 @@ Examples:
         action="store_true",
         help="Show detailed debug information and verbose output",
     )
-    output_group.add_argument(
-        "--version", action="version", version=f"%(prog)s {VERSION_INFO['version']}"
-    )
 
     args = parser.parse_args()
 
