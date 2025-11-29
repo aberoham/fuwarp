@@ -2028,63 +2028,81 @@ class FuwarpPython:
                     self.print_error("Failed to push certificate to emulator")
     
     def setup_colima_cert(self):
-        """Setup Colima certificate."""
+        """Setup Colima certificate.
+
+        Uses a hybrid approach:
+        1. Always installs to ~/.docker/certs.d/ (persistent, works offline)
+        2. If Colima is running, also installs into the VM for immediate effect
+
+        The ~/.docker/certs.d/ directory is automatically mounted by Colima
+        and certificates there are applied on VM startup.
+        """
         if not self.command_exists('colima'):
             return
-        
+
         self.print_info("Configuring Colima certificate...")
-        
-        # Check if colima machine is running
+
+        # Primary method: Install to ~/.docker/certs.d/ (persistent, works offline)
+        # Colima automatically mounts this directory and applies certs on startup
+        docker_certs_dir = os.path.expanduser("~/.docker/certs.d")
+        cert_dest = os.path.join(docker_certs_dir, "cloudflare-warp.crt")
+
+        # Check if VM is currently running
         try:
-            result = subprocess.run(['colima', 'status'], capture_output=True, text=True)
-            # Colima outputs status to stderr, not stdout
-            status_output = result.stdout + result.stderr
-            if 'running' not in status_output.lower():
-                self.print_warn("No Colima machine is currently running")
-                self.print_info("Please start a Colima machine first with: colima start")
-                return
+            status_result = subprocess.run(['colima', 'status'], capture_output=True)
+            vm_is_running = (status_result.returncode == 0)
         except Exception:
-            return
-        
+            vm_is_running = False
+
         if not self.is_install_mode():
-            self.print_action("Would copy certificate to Colima VM")
-            self.print_action(f"Would run: colima ssh -- sudo tee /usr/local/share/ca-certificates/cloudflare-warp.crt < {CERT_PATH}")
-            self.print_action("Would run: colima ssh -- sudo update-ca-certificates")
-            self.print_action("Would run: colima ssh -- sudo systemctl restart docker")
+            self.print_action(f"Would copy certificate to {cert_dest} (persistent)")
+            if vm_is_running:
+                self.print_action("Would also install certificate into running VM for immediate effect")
         else:
-            self.print_info("Copying certificate to Colima VM...")
-            
-            # Copy certificate into Colima VM
-            with open(CERT_PATH, 'r') as f:
-                cert_content = f.read()
-            
-            result = subprocess.run(
-                ['colima', 'ssh', '--', 'sudo', 'tee', '/usr/local/share/ca-certificates/cloudflare-warp.crt'],
-                input=cert_content, text=True, capture_output=True
-            )
-            
-            if result.returncode == 0:
-                # Update CA certificates
+            # Create directory and copy certificate (persistent location)
+            os.makedirs(docker_certs_dir, exist_ok=True)
+            shutil.copy(CERT_PATH, cert_dest)
+            self.print_info(f"Certificate installed to {cert_dest}")
+            self.print_info("This certificate will be automatically loaded on Colima start")
+
+            # If VM is running, also install for immediate effect
+            if vm_is_running:
+                self.print_info("Colima is running - also installing certificate into VM...")
+
+                with open(CERT_PATH, 'r') as f:
+                    cert_content = f.read()
+
                 result = subprocess.run(
-                    ['colima', 'ssh', '--', 'sudo', 'update-ca-certificates'],
-                    capture_output=True
+                    ['colima', 'ssh', '--', 'sudo', 'tee', '/usr/local/share/ca-certificates/cloudflare-warp.crt'],
+                    input=cert_content, text=True, capture_output=True
                 )
+
                 if result.returncode == 0:
-                    self.print_info("Certificate installed. Restarting Docker daemon...")
-                    # Restart Docker daemon to pick up new certificates
+                    # Update CA certificates
                     result = subprocess.run(
-                        ['colima', 'ssh', '--', 'sudo', 'systemctl', 'restart', 'docker'],
+                        ['colima', 'ssh', '--', 'sudo', 'update-ca-certificates'],
                         capture_output=True
                     )
                     if result.returncode == 0:
-                        self.print_info("Colima certificate installed successfully and Docker daemon restarted")
+                        self.print_info("Certificate installed in VM. Restarting Docker daemon...")
+                        # Restart Docker daemon to pick up new certificates
+                        result = subprocess.run(
+                            ['colima', 'ssh', '--', 'sudo', 'systemctl', 'restart', 'docker'],
+                            capture_output=True
+                        )
+                        if result.returncode == 0:
+                            self.print_info("Docker daemon restarted - certificate is now active")
+                        else:
+                            self.print_warn("Certificate installed but failed to restart Docker daemon")
+                            self.print_info("Restart Colima or run: colima ssh -- sudo systemctl restart docker")
                     else:
-                        self.print_warn("Certificate installed but failed to restart Docker daemon")
-                        self.print_info("You may need to manually restart Docker with: colima ssh -- sudo systemctl restart docker")
+                        self.print_warn("Failed to update CA certificates in VM")
+                        self.print_info("Certificate in ~/.docker/certs.d/ will be applied on next Colima restart")
                 else:
-                    self.print_error("Failed to update CA certificates in Colima VM")
+                    self.print_warn("Failed to install certificate into running VM")
+                    self.print_info("Certificate in ~/.docker/certs.d/ will be applied on next Colima restart")
             else:
-                self.print_error("Failed to copy certificate to Colima VM")
+                self.print_info("Colima is not running - certificate will be applied on next start")
     
     def verify_connection(self, tool_name):
         """Verify if a tool can connect through WARP."""
@@ -2720,31 +2738,45 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
         return has_issues
 
     def check_colima_status(self, temp_warp_cert):
-        """Check Colima configuration status."""
+        """Check Colima configuration status.
+
+        Checks both the persistent ~/.docker/certs.d/ location and the running VM.
+        """
         has_issues = False
         if self.command_exists('colima'):
+            # Check persistent certificate location first (primary)
+            docker_certs_dir = os.path.expanduser("~/.docker/certs.d")
+            cert_path = os.path.join(docker_certs_dir, "cloudflare-warp.crt")
+
+            if os.path.exists(cert_path):
+                if self.certificate_likely_exists_in_file(temp_warp_cert, cert_path):
+                    self.print_info("  ✓ Certificate installed in ~/.docker/certs.d/ (persistent)")
+                else:
+                    self.print_warn("  ✗ Certificate in ~/.docker/certs.d/ is outdated")
+                    has_issues = True
+            else:
+                self.print_warn("  ✗ Certificate not installed in ~/.docker/certs.d/")
+                has_issues = True
+
+            # Check VM status if running
             try:
-                result = subprocess.run(['colima', 'status'], capture_output=True, text=True)
-                # Colima outputs status to stderr, not stdout
-                status_output = result.stdout + result.stderr
-                if 'running' in status_output.lower():
-                    # Check if certificate exists in Colima VM
+                result = subprocess.run(['colima', 'status'], capture_output=True)
+                if result.returncode == 0:
+                    # VM is running - also check certificate in VM
                     result = subprocess.run(
                         ['colima', 'ssh', '--', 'test', '-f', '/usr/local/share/ca-certificates/cloudflare-warp.crt'],
                         capture_output=True
                     )
                     if result.returncode == 0:
-                        self.print_info("  ✓ Colima VM has Cloudflare certificate installed")
+                        self.print_info("  ✓ Certificate installed in running VM")
                     else:
-                        self.print_warn("  ✗ Colima VM missing Cloudflare certificate")
-                        has_issues = True
+                        self.print_info("  - Certificate not in VM (will be applied on restart)")
                 else:
-                    self.print_info("  - Colima installed but no machine is running")
-                    self.print_info("    Start a machine with: colima start")
+                    self.print_info("  - Colima is stopped (certificate will be loaded on start)")
             except Exception:
-                self.print_info("  - Failed to check Colima status")
+                self.print_info("  - Could not check Colima VM status")
         else:
-            self.print_info("  - Colima not installed (would configure VM if present)")
+            self.print_info("  - Colima not installed")
         return has_issues
 
     def check_all_status(self):
