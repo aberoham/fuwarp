@@ -55,7 +55,12 @@ Key test categories:
 - **TestCertificateManagement**: Certificate download and validation
 - **TestToolSetup**: Tool-specific certificate setup workflows
 - **TestStatusFunctionContracts**: Ensures all `check_*_status()` functions return booleans
-- **TestCodeQuality**: Static analysis to catch unsafe certificate append patterns
+- **TestCodeQuality**: Static analysis tests that enforce code standards:
+  - No unsafe certificate appends (use `safe_append_certificate()`)
+  - No unused global variables
+  - Consistent messaging ("Configuring" not "Setting up")
+  - No bare `except:` clauses (use `except Exception:`)
+- **TestBundleCreation**: Tests for `create_bundle_with_system_certs()` helper
 - **TestCertificateAppending**: Tests for safe PEM file handling (issue #13 fix)
 
 ## Architecture Overview
@@ -76,7 +81,9 @@ The script follows a modular architecture with these key components:
    - Support for: Node.js/npm, Python, gcloud, Git, curl, Java/JVM, jenv, Gradle, DBeaver, wget, Podman, Rancher, Colima, Android Emulator
    - Tools can be selectively processed using `--tools` option with keys or tags
 
-4. **Certificate Verification**:
+4. **Certificate Helpers**:
+   - `create_bundle_with_system_certs(path)`: Creates a CA bundle initialized with system certificates from `/etc/ssl/cert.pem` (macOS) or `/etc/ssl/certs/ca-certificates.crt` (Linux)
+   - `safe_append_certificate(cert, target)`: Safely appends a certificate to a bundle file, ensuring proper PEM formatting
    - `certificate_exists_in_file()`: Checks if certificate already exists in bundle files
    - `verify_connection()`: Tests if tools can connect through WARP
 

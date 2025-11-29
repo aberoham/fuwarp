@@ -358,7 +358,7 @@ class FuwarpPython:
         if not shell_path:
             try:
                 shell_path = pwd.getpwuid(os.getuid()).pw_shell
-            except:
+            except Exception:
                 shell_path = None
         
         # Final fallback for modern macOS
@@ -696,6 +696,28 @@ class FuwarpPython:
         except Exception:
             return 0, 0
 
+    def create_bundle_with_system_certs(self, bundle_path):
+        """Create a CA bundle initialized with system certificates.
+
+        Copies system CA certificates to the specified bundle path. This is used
+        when creating new certificate bundles for tools that need a full CA chain.
+
+        Args:
+            bundle_path: Path where the bundle should be created
+
+        Returns:
+            bool: True if system certs were copied, False if empty bundle created
+        """
+        if os.path.exists("/etc/ssl/cert.pem"):
+            shutil.copy("/etc/ssl/cert.pem", bundle_path)
+            return True
+        elif os.path.exists("/etc/ssl/certs/ca-certificates.crt"):
+            shutil.copy("/etc/ssl/certs/ca-certificates.crt", bundle_path)
+            return True
+        else:
+            Path(bundle_path).touch()
+            return False
+
     def safe_append_certificate(self, cert_file, target_file):
         """Safely append a certificate to a target file, ensuring proper PEM formatting.
 
@@ -823,7 +845,7 @@ class FuwarpPython:
                 cgroup = f.read()
                 if 'docker' in cgroup or 'containerd' in cgroup:
                     return True
-        except:
+        except Exception:
             pass
         
         # Check for WSL
@@ -835,7 +857,7 @@ class FuwarpPython:
                     warp_cli_win = shutil.which('warp-cli.exe')
                     if not warp_cli_win and not self.command_exists('warp-cli'):
                         return True
-        except:
+        except Exception:
             pass
         
         return False
@@ -1083,7 +1105,7 @@ class FuwarpPython:
                     return
                 else:
                     needs_setup = True
-                    self.print_info("Setting up Node.js certificate...")
+                    self.print_info("Configuring Node.js certificate...")
                     self.print_info(f"NODE_EXTRA_CA_CERTS is already set to: {node_extra_ca_certs}")
                     
                     # Check if we can write to the file
@@ -1104,7 +1126,7 @@ class FuwarpPython:
                                 if os.path.exists(node_extra_ca_certs):
                                     try:
                                         shutil.copy(node_extra_ca_certs, new_path)
-                                    except:
+                                    except Exception:
                                         Path(new_path).touch()
                                 
                                 self.safe_append_certificate(CERT_PATH, new_path)
@@ -1119,12 +1141,12 @@ class FuwarpPython:
                             self.safe_append_certificate(CERT_PATH, node_extra_ca_certs)
             else:
                 needs_setup = True
-                self.print_info("Setting up Node.js certificate...")
+                self.print_info("Configuring Node.js certificate...")
                 self.print_warn(f"NODE_EXTRA_CA_CERTS points to a non-existent file: {node_extra_ca_certs}")
                 self.print_warn("Please fix this manually")
         else:
             needs_setup = True
-            self.print_info("Setting up Node.js certificate...")
+            self.print_info("Configuring Node.js certificate...")
             # NODE_EXTRA_CA_CERTS not set, create a new bundle
             node_bundle = os.path.expanduser("~/.cloudflare-warp/node/ca-bundle.pem")
             
@@ -1156,7 +1178,7 @@ class FuwarpPython:
                 capture_output=True, text=True
             )
             current_cafile = result.stdout.strip() if result.returncode == 0 else ""
-        except:
+        except Exception:
             current_cafile = ""
         
         # npm needs a full CA bundle, not just a single certificate
@@ -1175,12 +1197,7 @@ class FuwarpPython:
                         self.print_action(f"Would run: npm config set cafile {npm_bundle}")
                     else:
                         os.makedirs(os.path.dirname(npm_bundle), exist_ok=True)
-                        if os.path.exists("/etc/ssl/cert.pem"):
-                            shutil.copy("/etc/ssl/cert.pem", npm_bundle)
-                        elif os.path.exists("/etc/ssl/certs/ca-certificates.crt"):
-                            shutil.copy("/etc/ssl/certs/ca-certificates.crt", npm_bundle)
-                        else:
-                            Path(npm_bundle).touch()
+                        self.create_bundle_with_system_certs(npm_bundle)
                         self.safe_append_certificate(CERT_PATH, npm_bundle)
                         subprocess.run(['npm', 'config', 'set', 'cafile', npm_bundle])
                         self.print_info(f"Repointed npm cafile to managed bundle: {npm_bundle}")
@@ -1210,17 +1227,11 @@ class FuwarpPython:
                         else:
                             os.makedirs(os.path.dirname(npm_bundle), exist_ok=True)
                             # Create a full bundle with system certs
-                            if os.path.exists("/etc/ssl/cert.pem"):
-                                shutil.copy("/etc/ssl/cert.pem", npm_bundle)
-                            elif os.path.exists("/etc/ssl/certs/ca-certificates.crt"):
-                                shutil.copy("/etc/ssl/certs/ca-certificates.crt", npm_bundle)
-                            else:
+                            if not self.create_bundle_with_system_certs(npm_bundle):
                                 # Copy existing bundle if available
                                 if os.path.exists(current_cafile):
                                     shutil.copy(current_cafile, npm_bundle)
-                                else:
-                                    Path(npm_bundle).touch()
-                            
+
                             # Append certificate to bundle
                             self.safe_append_certificate(CERT_PATH, npm_bundle)
 
@@ -1246,16 +1257,8 @@ class FuwarpPython:
                     response = input("Do you want to create a new CA bundle for npm? (Y/n) ")
                     if response.lower() != 'n':
                         os.makedirs(os.path.dirname(npm_bundle), exist_ok=True)
-                        # Create full bundle with system certs
-                        if os.path.exists("/etc/ssl/cert.pem"):
-                            shutil.copy("/etc/ssl/cert.pem", npm_bundle)
-                        elif os.path.exists("/etc/ssl/certs/ca-certificates.crt"):
-                            shutil.copy("/etc/ssl/certs/ca-certificates.crt", npm_bundle)
-                        else:
-                            Path(npm_bundle).touch()
-                        
+                        self.create_bundle_with_system_certs(npm_bundle)
                         self.safe_append_certificate(CERT_PATH, npm_bundle)
-
                         subprocess.run(['npm', 'config', 'set', 'cafile', npm_bundle])
                         self.print_info(f"Created and configured npm cafile at {npm_bundle}")
         else:
@@ -1270,17 +1273,9 @@ class FuwarpPython:
                 response = input("Do you want to configure npm with a CA bundle including Cloudflare certificate? (Y/n) ")
                 if response.lower() != 'n':
                     os.makedirs(os.path.dirname(npm_bundle), exist_ok=True)
-                    # Create full bundle with system certs
-                    if os.path.exists("/etc/ssl/cert.pem"):
-                        shutil.copy("/etc/ssl/cert.pem", npm_bundle)
-                    elif os.path.exists("/etc/ssl/certs/ca-certificates.crt"):
-                        shutil.copy("/etc/ssl/certs/ca-certificates.crt", npm_bundle)
-                    else:
+                    if not self.create_bundle_with_system_certs(npm_bundle):
                         self.print_warn("Could not find system CA bundle, creating new bundle with only Cloudflare certificate")
-                        Path(npm_bundle).touch()
-                    
                     self.safe_append_certificate(CERT_PATH, npm_bundle)
-
                     subprocess.run(['npm', 'config', 'set', 'cafile', npm_bundle])
                     self.print_info(f"Configured npm cafile to: {npm_bundle}")
                     
@@ -1295,7 +1290,7 @@ class FuwarpPython:
                             self.print_info("npm cafile configured successfully")
                         else:
                             self.print_error("Failed to configure npm cafile")
-                    except:
+                    except Exception:
                         pass
     
     def setup_python_cert(self):
@@ -1333,14 +1328,14 @@ class FuwarpPython:
                             if os.path.exists(requests_ca_bundle):
                                 try:
                                     shutil.copy(requests_ca_bundle, new_path)
-                                except:
+                                except Exception:
                                     Path(new_path).touch()
                             
                             # Append certificate to the new path
                             self.safe_append_certificate(CERT_PATH, new_path)
 
                             needs_setup = True
-                            self.print_info("Setting up Python certificate...")
+                            self.print_info("Configuring Python certificate...")
                             self.print_info(f"REQUESTS_CA_BUNDLE is already set to: {requests_ca_bundle}")
                             self.add_to_shell_config("REQUESTS_CA_BUNDLE", new_path, shell_config)
                             self.add_to_shell_config("SSL_CERT_FILE", new_path, shell_config)
@@ -1351,19 +1346,13 @@ class FuwarpPython:
                     suspicious, reason = self.is_suspicious_full_bundle(requests_ca_bundle, CERT_PATH)
                     if suspicious:
                         needs_setup = True
-                        self.print_info("Setting up Python certificate...")
+                        self.print_info("Configuring Python certificate...")
                         self.print_warn(f"REQUESTS_CA_BUNDLE looks suspiciously small ({reason})")
                         if not self.is_install_mode():
                             self.print_action(f"Would create full CA bundle at {python_bundle}")
                             self.print_action(f"Would repoint REQUESTS_CA_BUNDLE to {python_bundle}")
                         else:
-                            # Create proper bundle
-                            if os.path.exists("/etc/ssl/cert.pem"):
-                                shutil.copy("/etc/ssl/cert.pem", python_bundle)
-                            elif os.path.exists("/etc/ssl/certs/ca-certificates.crt"):
-                                shutil.copy("/etc/ssl/certs/ca-certificates.crt", python_bundle)
-                            else:
-                                Path(python_bundle).touch()
+                            self.create_bundle_with_system_certs(python_bundle)
                             self.safe_append_certificate(CERT_PATH, python_bundle)
                             self.add_to_shell_config("REQUESTS_CA_BUNDLE", python_bundle, shell_config)
                             self.add_to_shell_config("SSL_CERT_FILE", python_bundle, shell_config)
@@ -1380,7 +1369,7 @@ class FuwarpPython:
 
                     if cert_content not in file_content:
                         needs_setup = True
-                        self.print_info("Setting up Python certificate...")
+                        self.print_info("Configuring Python certificate...")
                         self.print_info(f"REQUESTS_CA_BUNDLE is already set to: {requests_ca_bundle}")
 
                         if not self.is_install_mode():
@@ -1390,29 +1379,20 @@ class FuwarpPython:
                             self.safe_append_certificate(CERT_PATH, requests_ca_bundle)
             else:
                 needs_setup = True
-                self.print_info("Setting up Python certificate...")
+                self.print_info("Configuring Python certificate...")
                 self.print_info(f"REQUESTS_CA_BUNDLE is already set to: {requests_ca_bundle}")
                 self.print_warn(f"REQUESTS_CA_BUNDLE points to a non-existent file: {requests_ca_bundle}")
         else:
             needs_setup = True
-            self.print_info("Setting up Python certificate...")
+            self.print_info("Configuring Python certificate...")
             
             if not self.is_install_mode():
                 self.print_action(f"Would create Python CA bundle at {python_bundle}")
                 self.print_action("Would copy system certificates and append Cloudflare certificate")
             else:
                 self.print_info(f"Creating Python CA bundle at {python_bundle}")
-                
-                # Copy system certificates
-                if os.path.exists("/etc/ssl/cert.pem"):
-                    shutil.copy("/etc/ssl/cert.pem", python_bundle)
-                elif os.path.exists("/etc/ssl/certs/ca-certificates.crt"):
-                    shutil.copy("/etc/ssl/certs/ca-certificates.crt", python_bundle)
-                else:
+                if not self.create_bundle_with_system_certs(python_bundle):
                     self.print_warn("Could not find system CA bundle, creating new bundle")
-                    Path(python_bundle).touch()
-                
-                # Append Cloudflare certificate
                 self.safe_append_certificate(CERT_PATH, python_bundle)
 
             self.add_to_shell_config("REQUESTS_CA_BUNDLE", python_bundle, shell_config)
@@ -1436,7 +1416,7 @@ class FuwarpPython:
                 capture_output=True, text=True
             )
             current_ca_file = result.stdout.strip() if result.returncode == 0 else ""
-        except:
+        except Exception:
             current_ca_file = ""
         
         # Check if gcloud needs configuration
@@ -1453,12 +1433,7 @@ class FuwarpPython:
                     self.print_action(f"Would run: gcloud config set core/custom_ca_certs_file {gcloud_bundle}")
                 else:
                     os.makedirs(gcloud_cert_dir, exist_ok=True)
-                    if os.path.exists("/etc/ssl/cert.pem"):
-                        shutil.copy("/etc/ssl/cert.pem", gcloud_bundle)
-                    elif os.path.exists("/etc/ssl/certs/ca-certificates.crt"):
-                        shutil.copy("/etc/ssl/certs/ca-certificates.crt", gcloud_bundle)
-                    else:
-                        Path(gcloud_bundle).touch()
+                    self.create_bundle_with_system_certs(gcloud_bundle)
                     self.safe_append_certificate(CERT_PATH, gcloud_bundle)
                     subprocess.run(['gcloud', 'config', 'set', 'core/custom_ca_certs_file', gcloud_bundle], capture_output=True, timeout=30)
                     self.print_info(f"Repointed gcloud custom CA file to managed bundle: {gcloud_bundle}")
@@ -1477,7 +1452,7 @@ class FuwarpPython:
         if not needs_setup:
             return
 
-        self.print_info("Setting up gcloud certificate...")
+        self.print_info("Configuring gcloud certificate...")
         
         # Create directory if it doesn't exist
         if self.is_install_mode():
@@ -1510,16 +1485,7 @@ class FuwarpPython:
         else:
             # Create combined bundle
             self.print_info(f"Creating gcloud CA bundle at {gcloud_bundle}")
-            
-            # Copy system certificates
-            if os.path.exists("/etc/ssl/cert.pem"):
-                shutil.copy("/etc/ssl/cert.pem", gcloud_bundle)
-            elif os.path.exists("/etc/ssl/certs/ca-certificates.crt"):
-                shutil.copy("/etc/ssl/certs/ca-certificates.crt", gcloud_bundle)
-            else:
-                Path(gcloud_bundle).touch()
-            
-            # Append Cloudflare certificate
+            self.create_bundle_with_system_certs(gcloud_bundle)
             self.safe_append_certificate(CERT_PATH, gcloud_bundle)
 
             # Configure gcloud
@@ -1549,7 +1515,7 @@ class FuwarpPython:
         try:
             result = subprocess.run(['git', 'config', '--global', 'http.sslCAInfo'], capture_output=True, text=True)
             current_ca = result.stdout.strip() if result.returncode == 0 else ""
-        except:
+        except Exception:
             current_ca = ""
         # Decide whether to repoint
         repoint = False
@@ -1571,12 +1537,7 @@ class FuwarpPython:
             return
         # Build full bundle and configure
         os.makedirs(os.path.dirname(git_bundle), exist_ok=True)
-        if os.path.exists("/etc/ssl/cert.pem"):
-            shutil.copy("/etc/ssl/cert.pem", git_bundle)
-        elif os.path.exists("/etc/ssl/certs/ca-certificates.crt"):
-            shutil.copy("/etc/ssl/certs/ca-certificates.crt", git_bundle)
-        else:
-            Path(git_bundle).touch()
+        self.create_bundle_with_system_certs(git_bundle)
         self.safe_append_certificate(CERT_PATH, git_bundle)
         subprocess.run(['git', 'config', '--global', 'http.sslCAInfo', git_bundle], capture_output=True, text=True)
         self.print_info(f"Configured git http.sslCAInfo to: {git_bundle}")
@@ -1603,12 +1564,7 @@ class FuwarpPython:
                 self.print_action(f"Would repoint CURL_CA_BUNDLE to {curl_bundle}")
                 return
             os.makedirs(os.path.dirname(curl_bundle), exist_ok=True)
-            if os.path.exists("/etc/ssl/cert.pem"):
-                shutil.copy("/etc/ssl/cert.pem", curl_bundle)
-            elif os.path.exists("/etc/ssl/certs/ca-certificates.crt"):
-                shutil.copy("/etc/ssl/certs/ca-certificates.crt", curl_bundle)
-            else:
-                Path(curl_bundle).touch()
+            self.create_bundle_with_system_certs(curl_bundle)
             self.safe_append_certificate(CERT_PATH, curl_bundle)
             shell_type = self.detect_shell()
             shell_config = self.get_shell_config(shell_type)
@@ -1635,7 +1591,7 @@ class FuwarpPython:
                         has_issues = True
                 else:
                     self.print_info("  - http.sslCAInfo not configured (uses system trust store)")
-            except:
+            except Exception:
                 self.print_warn("  ✗ Failed to check git configuration")
                 has_issues = True
         else:
@@ -1701,10 +1657,10 @@ class FuwarpPython:
             if result.returncode == 0 and 'cloudflare-zerotrust' in result.stdout.decode():
                 # Certificate already exists, nothing to do
                 return
-        except:
+        except Exception:
             pass
         
-        self.print_info("Setting up Java certificate...")
+        self.print_info("Configuring Java certificate...")
         self.print_info(f"Adding certificate to Java keystore: {cacerts}")
         
         if not self.is_install_mode():
@@ -1761,7 +1717,7 @@ class FuwarpPython:
                     # Certificate already exists
                     self.print_info(f"  ✓ {version_name}: Certificate already installed")
                     continue
-            except:
+            except Exception:
                 pass
 
             self.print_info(f"  Installing certificate for {version_name}...")
@@ -1825,10 +1781,10 @@ class FuwarpPython:
             if result.returncode == 0 and 'cloudflare-zerotrust' in result.stdout.decode():
                 # Certificate already exists, nothing to do
                 return
-        except:
+        except Exception:
             pass
         
-        self.print_info("Setting up DBeaver certificate...")
+        self.print_info("Configuring DBeaver certificate...")
         self.print_info("Found DBeaver at default install location")
         
         if not self.is_install_mode():
@@ -1866,7 +1822,7 @@ class FuwarpPython:
                 if CERT_PATH in content:
                     return
                 
-                self.print_info("Setting up wget certificate...")
+                self.print_info("Configuring wget certificate...")
                 self.print_warn(f"wget ca_certificate is already set in {wgetrc_path}")
                 
                 # Find current setting
@@ -1903,7 +1859,7 @@ class FuwarpPython:
                 return
         
         # File doesn't exist or doesn't have ca_certificate
-        self.print_info("Setting up wget certificate...")
+        self.print_info("Configuring wget certificate...")
         
         if not self.is_install_mode():
             self.print_action(f"Would add to {wgetrc_path}: {config_line}")
@@ -1918,7 +1874,7 @@ class FuwarpPython:
         if not self.command_exists('podman'):
             return
         
-        self.print_info("Setting up Podman certificate...")
+        self.print_info("Configuring Podman certificate...")
         
         # Check if podman machine exists
         try:
@@ -1927,7 +1883,7 @@ class FuwarpPython:
                 self.print_warn("No Podman machine is currently running")
                 self.print_info("Please start a Podman machine first with: podman machine start")
                 return
-        except:
+        except Exception:
             return
         
         if not self.is_install_mode():
@@ -1964,7 +1920,7 @@ class FuwarpPython:
         if not self.command_exists('rdctl'):
             return
         
-        self.print_info("Setting up Rancher certificate...")
+        self.print_info("Configuring Rancher certificate...")
         
         if not self.is_install_mode():
             self.print_action("Would copy certificate to Rancher VM")
@@ -2012,7 +1968,7 @@ class FuwarpPython:
                 self.print_info("No Android emulator is currently running")
                 self.print_info("Please start an emulator with: emulator -avd <your_avd_id> -writable-system -selinux permissive")
                 return
-        except:
+        except Exception:
             return
         
         self.print_warn("Android Emulator certificate installation requires a writable system partition")
@@ -2065,7 +2021,7 @@ class FuwarpPython:
         if not self.command_exists('colima'):
             return
         
-        self.print_info("Setting up Colima certificate...")
+        self.print_info("Configuring Colima certificate...")
         
         # Check if colima machine is running
         try:
@@ -2076,7 +2032,7 @@ class FuwarpPython:
                 self.print_warn("No Colima machine is currently running")
                 self.print_info("Please start a Colima machine first with: colima start")
                 return
-        except:
+        except Exception:
             return
         
         if not self.is_install_mode():
@@ -2348,7 +2304,7 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
                     else:
                         self.print_warn("  ✗ npm cafile not configured")
                         has_issues = True
-                except:
+                except Exception:
                     pass
         else:
             self.print_info("  - Node.js not installed")
@@ -2436,7 +2392,7 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
                 else:
                     self.print_warn("  ✗ gcloud not configured with custom CA")
                     has_issues = True
-            except:
+            except Exception:
                 self.print_warn("  ✗ Failed to check gcloud configuration")
                 has_issues = True
         else:
@@ -2458,7 +2414,7 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
                     else:
                         self.print_warn("  ✗ Java keystore missing Cloudflare certificate")
                         has_issues = True
-                except:
+                except Exception:
                     self.print_warn("  ✗ Failed to check Java keystore")
                     has_issues = True
             else:
@@ -2510,7 +2466,7 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
                 else:
                     self.print_warn(f"    ✗ {version_name}: Certificate missing")
                     has_issues = True
-            except:
+            except Exception:
                 self.print_warn(f"    ✗ {version_name}: Failed to check keystore")
                 has_issues = True
 
@@ -2563,7 +2519,7 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
                     else:
                         self.print_warn("  ✗ DBeaver keystore missing Cloudflare certificate")
                         has_issues = True
-                except:
+                except Exception:
                     self.print_warn("  ✗ Failed to check DBeaver keystore")
                     has_issues = True
             else:
@@ -2618,7 +2574,7 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
                 else:
                     self.print_info("  - Podman installed but no machine is running")
                     self.print_info("    Start a machine with: podman machine start")
-            except:
+            except Exception:
                 self.print_info("  - Failed to check Podman status")
         else:
             self.print_info("  - Podman not installed (would configure VM if present)")
@@ -2644,7 +2600,7 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
                         has_issues = True
                 else:
                     self.print_info("  - Rancher Desktop installed but not running")
-            except:
+            except Exception:
                 self.print_info("  - Rancher Desktop installed but not running")
         else:
             self.print_info("  - Rancher Desktop not installed (would configure if present)")
@@ -2662,7 +2618,7 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
                     self.print_info("    Run with --fix to see installation instructions")
                 else:
                     self.print_info("  - Android SDK detected but no emulator running")
-            except:
+            except Exception:
                 self.print_info("  - Android SDK detected")
         else:
             self.print_info("  - Android SDK not installed (would help configure if present)")
@@ -2690,7 +2646,7 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
                 else:
                     self.print_info("  - Colima installed but no machine is running")
                     self.print_info("    Start a machine with: colima start")
-            except:
+            except Exception:
                 self.print_info("  - Failed to check Colima status")
         else:
             self.print_info("  - Colima not installed (would configure VM if present)")
@@ -2743,7 +2699,7 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
                     self.print_warn("  ✗ WARP is not connected")
                     self.print_action("  Run: warp-cli connect")
                     has_issues = True
-            except:
+            except Exception:
                 self.print_error("  ✗ Failed to check WARP status")
                 has_issues = True
         else:
@@ -2810,7 +2766,7 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
             else:
                 self.print_warn("  ✗ WARP certificate is expired or expiring soon")
                 has_issues = True
-        except:
+        except Exception:
             self.print_error("  ✗ Failed to check certificate validity")
             has_issues = True
         print()
@@ -2846,7 +2802,7 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
                             self.print_info("  ✓ Using macOS system curl with SecureTransport (uses system keychain)")
                         elif os.environ.get('CURL_CA_BUNDLE'):
                             self.print_info(f"  ✓ CURL_CA_BUNDLE is set to: {os.environ['CURL_CA_BUNDLE']}")
-                    except:
+                    except Exception:
                         pass
                 else:
                     if os.environ.get('CURL_CA_BUNDLE'):
