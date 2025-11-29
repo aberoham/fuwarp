@@ -24,9 +24,6 @@ fuwarp (Cloudflare WARP Certificate Fixer Upper) is a Python script that automat
 # Show help
 ./fuwarp.py --help
 
-# Show version information
-./fuwarp.py --version
-
 # List all available tools and their tags
 ./fuwarp.py --list-tools
 

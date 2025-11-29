@@ -3051,17 +3051,10 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
 
 
 def main():
-    # Build version string
-    version_str = f"Version: {VERSION_INFO['version']}"
-    if VERSION_INFO['commit'] != 'unknown':
-        version_str += f" (commit: {VERSION_INFO['commit']})"
-    if VERSION_INFO['dirty']:
-        version_str += " [modified]"
-    
     parser = argparse.ArgumentParser(
         description=__description__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=f"{version_str} | Author: {__author__} | Default: status check only (use --fix to make changes)"
+        epilog=f"Author: {__author__} | Default: status check only (use --fix to make changes)"
     )
     
     parser.add_argument('--fix', action='store_true',
@@ -3079,8 +3072,6 @@ def main():
                         help='Skip network verification tests (useful in devcontainers)')
     parser.add_argument('--debug', '--verbose', action='store_true',
                         help='Show detailed debug information')
-    parser.add_argument('--version', action='version',
-                        version=f"%(prog)s {VERSION_INFO['version']}")
     
     args = parser.parse_args()
     
