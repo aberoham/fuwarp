@@ -20,15 +20,27 @@ until the Windows refactoring is complete.
 - Delete unused globals listed above
 - Check for dead functions not in registry (similar to `setup_curl_cert` in fuwarp.py)
 
-### 2. Helper Function Extraction
-- Windows equivalent of `create_bundle_with_system_certs()` (once implemented in fuwarp.py)
-- May need different system paths for Windows
+### 2. Helper Function Extraction (PR #29)
+The `create_bundle_with_system_certs()` helper was implemented in fuwarp.py:
+- Centralizes system CA bundle detection logic
+- Returns bool to indicate if system certs were found
+- Windows equivalent needed with different system paths:
+  - Windows doesn't have `/etc/ssl/cert.pem` or `/etc/ssl/certs/ca-certificates.crt`
+  - May need to use Windows Certificate Store APIs or certifi package
+  - Consider using `certifi.where()` if available
 
-### 3. Message Standardization
-- Use "Configuring <tool> certificate..." consistently (not "Setting up")
+### 3. Message Standardization (PR #29)
+- Changed 16 occurrences of "Setting up X certificate" to "Configuring X certificate"
+- Apply same pattern to fuwarp_windows.py for consistency
+- Check with: `grep -n "Setting up" fuwarp_windows.py`
 
-### 4. Exception Handling
-- Replace bare `except:` with specific exceptions like `subprocess.SubprocessError`
+### 4. Exception Handling (PR #29)
+- Replaced 28 bare `except:` with `except Exception:` in fuwarp.py
+- Rationale: `except Exception:` catches all "normal" exceptions but allows:
+  - `KeyboardInterrupt` (Ctrl+C) to propagate
+  - `SystemExit` to propagate
+- Apply same pattern to fuwarp_windows.py
+- Check with: `grep -n "except:" fuwarp_windows.py | grep -v "Exception"`
 
 ## Windows-Specific Considerations
 

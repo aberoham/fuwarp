@@ -501,6 +501,84 @@ class TestStatusFunctionContracts(FuwarpTestCase):
             assert isinstance(result, bool), f"check_jenv_status returned {type(result).__name__}, not bool"
 
 
+class TestBundleCreation(FuwarpTestCase):
+    """Tests for system CA bundle creation helper."""
+
+    def test_creates_bundle_from_macos_system_certs(self, tmp_path):
+        """Test bundle creation when /etc/ssl/cert.pem exists (macOS)."""
+        # Create a mock system cert file
+        mock_system_cert = tmp_path / "system-cert.pem"
+        mock_system_cert.write_text(mock_data.SAMPLE_CA_BUNDLE)
+
+        target_bundle = tmp_path / "bundle.pem"
+
+        with patch('platform.system', return_value='Darwin'):
+            instance = fuwarp.FuwarpPython(mode='install')
+
+            # Mock os.path.exists to simulate macOS system cert location
+            with patch('os.path.exists') as mock_exists:
+                mock_exists.side_effect = lambda p: p == "/etc/ssl/cert.pem" or p == str(target_bundle.parent)
+
+                with patch('shutil.copy') as mock_copy:
+                    result = instance.create_bundle_with_system_certs(str(target_bundle))
+
+                    # Should have copied from macOS location
+                    mock_copy.assert_called_once_with("/etc/ssl/cert.pem", str(target_bundle))
+                    assert result is True
+
+    def test_creates_bundle_from_linux_system_certs(self, tmp_path):
+        """Test bundle creation when /etc/ssl/certs/ca-certificates.crt exists (Linux)."""
+        target_bundle = tmp_path / "bundle.pem"
+
+        with patch('platform.system', return_value='Linux'):
+            instance = fuwarp.FuwarpPython(mode='install')
+
+            # Mock os.path.exists: macOS path doesn't exist, Linux path does
+            with patch('os.path.exists') as mock_exists:
+                mock_exists.side_effect = lambda p: p == "/etc/ssl/certs/ca-certificates.crt"
+
+                with patch('shutil.copy') as mock_copy:
+                    result = instance.create_bundle_with_system_certs(str(target_bundle))
+
+                    # Should have copied from Linux location
+                    mock_copy.assert_called_once_with("/etc/ssl/certs/ca-certificates.crt", str(target_bundle))
+                    assert result is True
+
+    def test_creates_empty_bundle_when_no_system_certs(self, tmp_path):
+        """Test empty bundle creation when no system certs found."""
+        target_bundle = tmp_path / "bundle.pem"
+
+        with patch('platform.system', return_value='Darwin'):
+            instance = fuwarp.FuwarpPython(mode='install')
+
+            # Mock os.path.exists: neither system cert location exists
+            with patch('os.path.exists', return_value=False):
+                result = instance.create_bundle_with_system_certs(str(target_bundle))
+
+                # Should create empty file and return False
+                assert result is False
+                assert target_bundle.exists()
+                assert target_bundle.read_text() == ""
+
+    def test_returns_true_when_system_certs_copied(self, tmp_path):
+        """Test return value indicates whether system certs were found."""
+        target_bundle = tmp_path / "bundle.pem"
+
+        with patch('platform.system', return_value='Darwin'):
+            instance = fuwarp.FuwarpPython(mode='install')
+
+            # Test True case (system certs exist)
+            with patch('os.path.exists', side_effect=lambda p: p == "/etc/ssl/cert.pem"):
+                with patch('shutil.copy'):
+                    result = instance.create_bundle_with_system_certs(str(target_bundle))
+                    assert result is True
+
+            # Test False case (no system certs)
+            with patch('os.path.exists', return_value=False):
+                result = instance.create_bundle_with_system_certs(str(target_bundle))
+                assert result is False
+
+
 class TestCertificateAppending(FuwarpTestCase):
     """Tests for certificate appending to ensure proper PEM formatting (issue #13)."""
 
@@ -809,6 +887,62 @@ class TestCodeQuality:
         assert not unused_globals, (
             f"Unused global variables found in fuwarp_windows.py: {unused_globals}\n"
             "These variables are defined but never referenced elsewhere in the code."
+        )
+
+    def test_consistent_setup_messaging_in_fuwarp(self):
+        """Ensure setup functions use consistent messaging patterns.
+
+        All setup functions should use "Configuring <tool> certificate..."
+        instead of the inconsistent "Setting up <tool> certificate..." pattern.
+        This ensures a consistent user experience across all tools.
+        """
+        import os
+        import re
+
+        test_dir = os.path.dirname(os.path.abspath(__file__))
+        fuwarp_path = os.path.join(os.path.dirname(test_dir), "fuwarp.py")
+
+        with open(fuwarp_path, 'r') as f:
+            source = f.read()
+
+        # Find "Setting up" patterns which should be "Configuring"
+        setting_up_pattern = re.compile(r'Setting up.*certificate', re.IGNORECASE)
+
+        matches = setting_up_pattern.findall(source)
+        assert not matches, (
+            f"Found inconsistent messaging in fuwarp.py:\n"
+            f"{matches}\n\n"
+            f"Use 'Configuring <tool> certificate...' instead of 'Setting up <tool> certificate...'"
+        )
+
+    def test_no_bare_except_clauses_in_fuwarp(self):
+        """Ensure no bare 'except:' clauses exist in fuwarp.py.
+
+        Bare except clauses catch all exceptions including SystemExit and
+        KeyboardInterrupt, which is rarely what's intended. They should be
+        replaced with specific exception types like 'except Exception:' or
+        more specific exceptions.
+        """
+        import os
+        import re
+
+        test_dir = os.path.dirname(os.path.abspath(__file__))
+        fuwarp_path = os.path.join(os.path.dirname(test_dir), "fuwarp.py")
+
+        with open(fuwarp_path, 'r') as f:
+            lines = f.readlines()
+
+        # Find bare except clauses (except: without an exception type)
+        bare_excepts = []
+        for i, line in enumerate(lines, 1):
+            # Match 'except:' but not 'except SomeException:' or 'except (A, B):'
+            if re.match(r'^\s*except\s*:\s*$', line) or re.match(r'^\s*except\s*:\s*#', line):
+                bare_excepts.append(f"Line {i}: {line.strip()}")
+
+        assert not bare_excepts, (
+            f"Found bare 'except:' clauses in fuwarp.py:\n"
+            + "\n".join(bare_excepts) + "\n\n"
+            f"Replace with 'except Exception:' or a more specific exception type."
         )
 
 
