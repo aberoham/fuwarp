@@ -946,6 +946,53 @@ class TestCodeQuality:
             f"Replace with 'except Exception:' or a more specific exception type."
         )
 
+    def test_no_raw_cert_comparisons_in_fuwarp(self):
+        """Ensure setup functions use certificate_exists_in_file() not raw string comparison.
+
+        Regression test for issue #35 - Status checks use certificate_exists_in_file()
+        which does normalized base64 comparison, but setup functions were using raw
+        string comparison like 'cert_content in file_content'. This caused --fix to
+        silently skip tools that status correctly identified as needing fixes.
+
+        All certificate existence checks in setup functions should use:
+        - self.certificate_exists_in_file(CERT_PATH, target_file)
+        Not:
+        - cert_content in file_content
+        - cert_content not in file_content
+        """
+        import os
+        import re
+
+        test_dir = os.path.dirname(os.path.abspath(__file__))
+        fuwarp_path = os.path.join(os.path.dirname(test_dir), "fuwarp.py")
+
+        with open(fuwarp_path, 'r') as f:
+            source = f.read()
+
+        # Find raw certificate content comparisons in setup functions
+        # These patterns indicate raw string comparison instead of certificate_exists_in_file()
+        unsafe_patterns = [
+            # Pattern: cert_content in file_content or similar
+            (r'cert_content\s+(?:not\s+)?in\s+file_content', 'cert_content in/not in file_content'),
+            # Pattern: file_content containing cert check
+            (r'file_content.*cert_content|cert_content.*file_content', 'raw content comparison'),
+        ]
+
+        violations = []
+        lines = source.split('\n')
+        for i, line in enumerate(lines, 1):
+            for pattern, description in unsafe_patterns:
+                if re.search(pattern, line, re.IGNORECASE):
+                    violations.append(f"Line {i}: {line.strip()} ({description})")
+
+        assert not violations, (
+            f"Found raw certificate comparisons in fuwarp.py:\n"
+            + "\n".join(violations) + "\n\n"
+            "Setup functions must use self.certificate_exists_in_file(CERT_PATH, target)\n"
+            "instead of raw 'cert_content in file_content' comparisons.\n"
+            "See issue #35 for details on why this is required."
+        )
+
 
 class TestPerformance(FuwarpTestCase):
     """Tests for performance and subprocess call limits.
