@@ -1552,7 +1552,48 @@ class FuwarpPython:
             self.add_to_shell_config("REQUESTS_CA_BUNDLE", python_bundle, shell_config)
             self.add_to_shell_config("SSL_CERT_FILE", python_bundle, shell_config)
             self.add_to_shell_config("CURL_CA_BUNDLE", python_bundle, shell_config)
-    
+
+        # Independently check SSL_CERT_FILE for suspicious bundles
+        # This handles the case where REQUESTS_CA_BUNDLE is fine but SSL_CERT_FILE is broken
+        ssl_cert_file = os.environ.get('SSL_CERT_FILE', '')
+        if ssl_cert_file and ssl_cert_file != python_bundle:
+            if os.path.exists(ssl_cert_file):
+                suspicious, reason = self.is_suspicious_full_bundle(ssl_cert_file, CERT_PATH)
+                if suspicious:
+                    self.print_info("Configuring SSL_CERT_FILE...")
+                    self.print_warn(f"SSL_CERT_FILE looks suspiciously small ({reason})")
+                    if not self.is_install_mode():
+                        self.print_action(f"Would repoint SSL_CERT_FILE to {python_bundle}")
+                    else:
+                        # Ensure the managed bundle exists
+                        if not os.path.exists(python_bundle):
+                            self.create_bundle_with_system_certs(python_bundle)
+                            self.safe_append_certificate(CERT_PATH, python_bundle)
+                        self.add_to_shell_config("SSL_CERT_FILE", python_bundle, shell_config)
+                        self.print_info(f"Repointed SSL_CERT_FILE to managed bundle: {python_bundle}")
+                elif not self.certificate_exists_in_file(CERT_PATH, ssl_cert_file):
+                    self.print_info("Configuring SSL_CERT_FILE...")
+                    self.print_warn("SSL_CERT_FILE doesn't contain WARP certificate")
+                    if not self.is_install_mode():
+                        self.print_action(f"Would repoint SSL_CERT_FILE to {python_bundle}")
+                    else:
+                        if not os.path.exists(python_bundle):
+                            self.create_bundle_with_system_certs(python_bundle)
+                            self.safe_append_certificate(CERT_PATH, python_bundle)
+                        self.add_to_shell_config("SSL_CERT_FILE", python_bundle, shell_config)
+                        self.print_info(f"Repointed SSL_CERT_FILE to managed bundle: {python_bundle}")
+            else:
+                self.print_info("Configuring SSL_CERT_FILE...")
+                self.print_warn(f"SSL_CERT_FILE points to non-existent file: {ssl_cert_file}")
+                if not self.is_install_mode():
+                    self.print_action(f"Would repoint SSL_CERT_FILE to {python_bundle}")
+                else:
+                    if not os.path.exists(python_bundle):
+                        self.create_bundle_with_system_certs(python_bundle)
+                        self.safe_append_certificate(CERT_PATH, python_bundle)
+                    self.add_to_shell_config("SSL_CERT_FILE", python_bundle, shell_config)
+                    self.print_info(f"Repointed SSL_CERT_FILE to managed bundle: {python_bundle}")
+
     def setup_gcloud_cert(self):
         """Setup gcloud certificate."""
         if not self.command_exists('gcloud'):
