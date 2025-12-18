@@ -487,7 +487,92 @@ class FuwarpPython:
             return os.path.join(home, '.config/fish/config.fish')
         else:
             return os.path.join(home, '.profile')
-    
+
+    def check_environment_sanity(self):
+        """Check for broken CA-related environment variables pointing to non-existent files.
+
+        This catches common issues where users have stale environment variables
+        from previous WARP setups or removed shell config exports without unsetting
+        the variables in their current session.
+
+        Returns:
+            bool: True if any broken variables were found, False otherwise
+        """
+        # Environment variables to check (simple file path variables)
+        ca_env_vars = [
+            'CURL_CA_BUNDLE',
+            'SSL_CERT_FILE',
+            'REQUESTS_CA_BUNDLE',
+            'NODE_EXTRA_CA_CERTS',
+            'GIT_SSL_CAINFO',
+        ]
+
+        broken_vars = []
+
+        # Check simple path variables
+        for var_name in ca_env_vars:
+            var_value = os.environ.get(var_name, '')
+            if var_value and not os.path.exists(var_value):
+                broken_vars.append((var_name, var_value))
+
+        # Special handling for JAVA_OPTS which may contain -Djavax.net.ssl.trustStore=...
+        java_opts = os.environ.get('JAVA_OPTS', '')
+        if java_opts:
+            import re
+            match = re.search(r'-Djavax\.net\.ssl\.trustStore=([^\s]+)', java_opts)
+            if match:
+                truststore_path = match.group(1)
+                if not os.path.exists(truststore_path):
+                    broken_vars.append(('JAVA_OPTS (trustStore)', truststore_path))
+
+        if not broken_vars:
+            return False
+
+        # Display prominent warning
+        print()
+        self.print_warn("=" * 60)
+        self.print_warn("BROKEN ENVIRONMENT DETECTED")
+        self.print_warn("=" * 60)
+        print()
+        self.print_warn("The following environment variables point to non-existent files:")
+        print()
+
+        for var_name, var_value in broken_vars:
+            self.print_error(f"  {var_name}={var_value}")
+            self.print_error(f"    FILE DOES NOT EXIST")
+            print()
+
+        # Provide remediation steps
+        self.print_info("To fix in your CURRENT shell session:")
+        for var_name, _ in broken_vars:
+            if var_name.startswith('JAVA_OPTS'):
+                self.print_info(f"  unset JAVA_OPTS  # (or edit to remove trustStore)")
+            else:
+                self.print_info(f"  unset {var_name}")
+        print()
+
+        self.print_info("To fix PERMANENTLY, remove/comment the export lines from:")
+        shell_type = self.detect_shell()
+        if shell_type == 'zsh':
+            self.print_info("  ~/.zshrc, ~/.zprofile")
+        elif shell_type == 'bash':
+            self.print_info("  ~/.bashrc, ~/.bash_profile, ~/.profile")
+        elif shell_type == 'fish':
+            self.print_info("  ~/.config/fish/config.fish")
+        else:
+            self.print_info("  ~/.profile, ~/.bashrc, or your shell's config file")
+        print()
+
+        self.print_warn("IMPORTANT: After editing shell config files, you must either:")
+        self.print_info("  1. Run: source ~/.zshrc  (or the appropriate config file)")
+        self.print_info("  2. Or open a NEW terminal window")
+        print()
+        self.print_warn("Editing .zshrc does NOT affect your current shell session!")
+        self.print_warn("=" * 60)
+        print()
+
+        return True
+
     def get_cert_fingerprint(self, cert_path=None):
         """Get certificate fingerprint (cached)."""
         if cert_path is None:
@@ -3441,7 +3526,11 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
                     self.print_info("   Certificate must be obtained from your Windows host")
                 self.print_info("   Network verification tests will be skipped")
                 print()
-            
+
+            # Check for broken CA environment variables early
+            # This catches common issues before they cause confusing errors
+            self.check_environment_sanity()
+
             # Validate selected tools
             if self.selected_tools:
                 invalid_tools = self.validate_selected_tools()
