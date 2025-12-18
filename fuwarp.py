@@ -21,6 +21,24 @@ from datetime import datetime
 # Version and metadata
 __description__ = "Cloudflare WARP Certificate Fixer Upper for macOS and Linux"
 __author__ = "Ingersoll & Claude"
+__version__ = "2025.12.18"  # CalVer: YYYY.MM.DD (auto-updated on release)
+
+
+def parse_calver(version_str):
+    """Parse CalVer version string into comparable tuple.
+
+    Args:
+        version_str: Version like "2025.12.18" or "2025.12.18.1"
+
+    Returns:
+        tuple: (year, month, day, patch) where patch is 0 for base versions
+    """
+    parts = version_str.split('.')
+    if len(parts) == 3:
+        return (int(parts[0]), int(parts[1]), int(parts[2]), 0)
+    elif len(parts) == 4:
+        return (int(parts[0]), int(parts[1]), int(parts[2]), int(parts[3]))
+    raise ValueError(f"Invalid CalVer format: {version_str}")
 
 
 def get_version_info():
@@ -337,12 +355,17 @@ class FuwarpPython:
     def check_for_updates(self):
         """Check if a newer version of fuwarp is available on GitHub.
 
+        Uses CalVer version comparison instead of file hashes to avoid
+        false positives from local modifications or formatting differences.
+
         Uses an unverified SSL context since WARP certificate trust might not
         be configured yet (which is why the user is running this script).
 
         Returns:
             bool: True if an update is available, False otherwise
         """
+        import re
+
         try:
             # Use unverified SSL context - WARP might not be configured yet
             context = ssl._create_unverified_context()
@@ -352,22 +375,36 @@ class FuwarpPython:
 
             req = urllib.request.Request(url, headers={'User-Agent': 'fuwarp-update-check'})
             with urllib.request.urlopen(req, context=context, timeout=10) as response:
-                remote_content = response.read()
+                remote_content = response.read().decode('utf-8')
 
-            # Get local file hash
-            script_path = os.path.abspath(__file__)
-            with open(script_path, 'rb') as f:
-                local_hash = hashlib.sha256(f.read()).hexdigest()
+            # Extract remote version using regex
+            version_match = re.search(r'^__version__\s*=\s*["\']([0-9.]+)["\']',
+                                      remote_content, re.MULTILINE)
 
-            remote_hash = hashlib.sha256(remote_content).hexdigest()
+            if not version_match:
+                self.print_debug("Could not extract version from remote file")
+                return False
 
-            self.print_debug(f"Local hash:  {local_hash[:16]}...")
-            self.print_debug(f"Remote hash: {remote_hash[:16]}...")
+            remote_version = version_match.group(1)
+            local_version = __version__
 
-            if local_hash != remote_hash:
+            self.print_debug(f"Local version:  {local_version}")
+            self.print_debug(f"Remote version: {remote_version}")
+
+            # Parse and compare versions
+            try:
+                local_tuple = parse_calver(local_version)
+                remote_tuple = parse_calver(remote_version)
+            except ValueError as e:
+                self.print_debug(f"Version parse error: {e}")
+                return False
+
+            if remote_tuple > local_tuple:
                 print()
                 self.print_warn("=" * 60)
                 self.print_warn("A newer version of fuwarp.py is available!")
+                self.print_info(f"  Local:  {local_version}")
+                self.print_info(f"  Remote: {remote_version}")
                 self.print_warn("Update before running --fix to ensure best results:")
                 # Use -k to skip cert verification since user's curl may be broken
                 # (which is likely why they're running this script)
@@ -375,6 +412,8 @@ class FuwarpPython:
                 self.print_warn("=" * 60)
                 print()
                 return True
+            elif remote_tuple < local_tuple:
+                self.print_debug(f"Running development version ({local_version} > {remote_version})")
             else:
                 self.print_debug("fuwarp.py is up to date")
 
@@ -3289,10 +3328,23 @@ def main():
                         help='Skip network verification tests (useful in devcontainers)')
     parser.add_argument('--debug', '--verbose', action='store_true',
                         help='Show detailed debug information')
-    
+    parser.add_argument('--version', '-V', action='store_true',
+                        help='Show version information and exit')
+
     args = parser.parse_args()
-    
-    # Handle --list-tools first
+
+    # Handle --version first
+    if args.version:
+        print(f"fuwarp {__version__}")
+        version_info = VERSION_INFO
+        if version_info['commit'] != 'unknown':
+            print(f"  Git commit: {version_info['commit']} ({version_info['date']})")
+            print(f"  Branch: {version_info['branch']}")
+            if version_info['dirty']:
+                print("  (with local modifications)")
+        sys.exit(0)
+
+    # Handle --list-tools
     if args.list_tools:
         # Create a temporary instance just to access the registry
         temp_fuwarp = FuwarpPython()
