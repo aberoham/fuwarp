@@ -7,6 +7,9 @@ on:
       - 'fuwarp.py'
       - 'fuwarp_windows.py'
 
+permissions:
+  contents: write
+
 jobs:
   stamp-version:
     runs-on: ubuntu-latest
