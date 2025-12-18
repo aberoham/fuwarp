@@ -18,6 +18,28 @@ import winreg
 from pathlib import Path
 from datetime import datetime
 
+# Version and metadata
+__description__ = "Cloudflare WARP Certificate Fixer Upper for Windows"
+__author__ = "Ingersoll & Claude"
+__version__ = "2025.12.18"  # CalVer: YYYY.MM.DD (auto-updated on release)
+
+
+def parse_calver(version_str):
+    """Parse CalVer version string into comparable tuple.
+
+    Args:
+        version_str: Version like "2025.12.18" or "2025.12.18.1"
+
+    Returns:
+        tuple: (year, month, day, patch) where patch is 0 for base versions
+    """
+    parts = version_str.split('.')
+    if len(parts) == 3:
+        return (int(parts[0]), int(parts[1]), int(parts[2]), 0)
+    elif len(parts) == 4:
+        return (int(parts[0]), int(parts[1]), int(parts[2]), int(parts[3]))
+    raise ValueError(f"Invalid CalVer format: {version_str}")
+
 
 def get_version_info():
     """Get version information from Git."""

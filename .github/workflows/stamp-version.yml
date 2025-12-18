@@ -1,0 +1,79 @@
+name: Stamp Version
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'fuwarp.py'
+      - 'fuwarp_windows.py'
+
+jobs:
+  stamp-version:
+    runs-on: ubuntu-latest
+    # Only run if the commit was NOT made by this workflow (avoid infinite loop)
+    if: ${{ !contains(github.event.head_commit.message, '[skip-version]') && github.event.head_commit.author.name != 'github-actions[bot]' }}
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        fetch-depth: 0
+
+    - name: Get today's date and determine version
+      id: version
+      run: |
+        TODAY=$(date -u +%Y.%-m.%-d)
+        echo "date=$TODAY" >> $GITHUB_OUTPUT
+
+        # Check current version in the file
+        CURRENT_VERSION=$(grep -oP '__version__\s*=\s*["'"'"']\K[0-9.]+' fuwarp.py || echo "")
+        echo "Current version: $CURRENT_VERSION"
+
+        # Determine new version based on current
+        if [[ "$CURRENT_VERSION" == "$TODAY" ]]; then
+          # Already today's base version, add .1
+          NEW_VERSION="$TODAY.1"
+        elif [[ "$CURRENT_VERSION" =~ ^${TODAY}\.([0-9]+)$ ]]; then
+          # Already has a patch number, increment it
+          PATCH=$((${BASH_REMATCH[1]} + 1))
+          NEW_VERSION="$TODAY.$PATCH"
+        else
+          # Different date or no version, use today's date
+          NEW_VERSION="$TODAY"
+        fi
+
+        echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+        echo "New version will be: $NEW_VERSION"
+
+    - name: Update version in fuwarp.py
+      run: |
+        sed -i 's/^__version__\s*=\s*["'"'"'][0-9.]*["'"'"']/__version__ = "${{ steps.version.outputs.new_version }}"/' fuwarp.py
+
+        # Verify the change
+        echo "Updated fuwarp.py version:"
+        grep '__version__' fuwarp.py
+
+    - name: Update version in fuwarp_windows.py
+      run: |
+        if [ -f fuwarp_windows.py ] && grep -q '__version__' fuwarp_windows.py; then
+          sed -i 's/^__version__\s*=\s*["'"'"'][0-9.]*["'"'"']/__version__ = "${{ steps.version.outputs.new_version }}"/' fuwarp_windows.py
+          echo "Updated fuwarp_windows.py version:"
+          grep '__version__' fuwarp_windows.py
+        else
+          echo "fuwarp_windows.py not found or has no __version__, skipping"
+        fi
+
+    - name: Commit version stamp
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+
+        # Only commit if there are changes
+        if git diff --quiet; then
+          echo "No version changes needed"
+        else
+          git add fuwarp.py fuwarp_windows.py 2>/dev/null || git add fuwarp.py
+          git commit -m "chore: stamp version ${{ steps.version.outputs.new_version }} [skip-version]"
+          git push
+          echo "Version stamped and pushed: ${{ steps.version.outputs.new_version }}"
+        fi

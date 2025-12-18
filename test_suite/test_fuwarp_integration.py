@@ -1266,44 +1266,6 @@ class TestUpdateCheck(FuwarpTestCase):
             # The context should be passed as a keyword argument
             assert 'context' in call_kwargs.kwargs or len(call_kwargs.args) >= 2
 
-    def test_check_for_updates_returns_true_when_different(self, tmp_path):
-        """Verify update check returns True when versions differ."""
-        with patch('platform.system', return_value='Darwin'):
-            instance = fuwarp.FuwarpPython(mode='status')
-
-        with patch('urllib.request.urlopen') as mock_urlopen, \
-             patch('builtins.open', mock_open(read_data=b'local content')):
-
-            mock_response = MagicMock()
-            mock_response.read.return_value = b'remote content different'
-            mock_response.__enter__ = MagicMock(return_value=mock_response)
-            mock_response.__exit__ = MagicMock(return_value=False)
-            mock_urlopen.return_value = mock_response
-
-            result = instance.check_for_updates()
-
-            assert result is True, "check_for_updates should return True when hashes differ"
-
-    def test_check_for_updates_returns_false_when_same(self, tmp_path):
-        """Verify update check returns False when versions match."""
-        content = b'identical content'
-
-        with patch('platform.system', return_value='Darwin'):
-            instance = fuwarp.FuwarpPython(mode='status')
-
-        with patch('urllib.request.urlopen') as mock_urlopen, \
-             patch('builtins.open', mock_open(read_data=content)):
-
-            mock_response = MagicMock()
-            mock_response.read.return_value = content
-            mock_response.__enter__ = MagicMock(return_value=mock_response)
-            mock_response.__exit__ = MagicMock(return_value=False)
-            mock_urlopen.return_value = mock_response
-
-            result = instance.check_for_updates()
-
-            assert result is False, "check_for_updates should return False when hashes match"
-
     def test_check_for_updates_handles_network_error(self, tmp_path):
         """Verify update check handles network errors gracefully."""
         with patch('platform.system', return_value='Darwin'):
@@ -1436,6 +1398,140 @@ class TestGcloudVerification(FuwarpTestCase):
             has_issues = instance.check_gcloud_status(str(cert_file))
 
             assert has_issues is True
+
+
+class TestCalVerVersion(FuwarpTestCase):
+    """Tests for CalVer version handling."""
+
+    def test_version_variable_exists(self):
+        """Verify __version__ is defined."""
+        assert hasattr(fuwarp, '__version__')
+        assert fuwarp.__version__ is not None
+
+    def test_version_format_valid(self):
+        """Verify version follows CalVer format."""
+        import re
+        pattern = r'^\d{4}\.\d{1,2}\.\d{1,2}(\.\d+)?$'
+        assert re.match(pattern, fuwarp.__version__), \
+            f"Version '{fuwarp.__version__}' doesn't match CalVer format YYYY.M.D or YYYY.M.D.N"
+
+    def test_parse_calver_basic(self):
+        """Test CalVer parsing for basic version."""
+        result = fuwarp.parse_calver("2025.12.18")
+        assert result == (2025, 12, 18, 0)
+
+    def test_parse_calver_with_patch(self):
+        """Test CalVer parsing with patch number."""
+        result = fuwarp.parse_calver("2025.12.18.3")
+        assert result == (2025, 12, 18, 3)
+
+    def test_parse_calver_single_digit_month_day(self):
+        """Test CalVer parsing with single-digit month/day."""
+        result = fuwarp.parse_calver("2025.1.5")
+        assert result == (2025, 1, 5, 0)
+
+    def test_parse_calver_invalid_format(self):
+        """Test CalVer parsing rejects invalid formats."""
+        with pytest.raises(ValueError):
+            fuwarp.parse_calver("invalid")
+        with pytest.raises(ValueError):
+            fuwarp.parse_calver("2025.12")
+        with pytest.raises(ValueError):
+            fuwarp.parse_calver("2025")
+
+    def test_version_comparison_newer(self):
+        """Test version comparison detects newer versions."""
+        assert fuwarp.parse_calver("2025.12.19") > fuwarp.parse_calver("2025.12.18")
+        assert fuwarp.parse_calver("2025.12.18.1") > fuwarp.parse_calver("2025.12.18")
+        assert fuwarp.parse_calver("2026.1.1") > fuwarp.parse_calver("2025.12.31")
+
+    def test_version_comparison_older(self):
+        """Test version comparison detects older versions."""
+        assert fuwarp.parse_calver("2025.12.17") < fuwarp.parse_calver("2025.12.18")
+        assert fuwarp.parse_calver("2025.12.18") < fuwarp.parse_calver("2025.12.18.1")
+        assert fuwarp.parse_calver("2024.12.31") < fuwarp.parse_calver("2025.1.1")
+
+    def test_version_comparison_equal(self):
+        """Test version comparison with equal versions."""
+        assert fuwarp.parse_calver("2025.12.18") == fuwarp.parse_calver("2025.12.18")
+        # Note: (2025, 12, 18, 0) should equal (2025, 12, 18, 0)
+        assert fuwarp.parse_calver("2025.12.18") == (2025, 12, 18, 0)
+
+
+class TestUpdateCheckCalVer(FuwarpTestCase):
+    """Tests for CalVer-based update checking."""
+
+    def test_check_for_updates_newer_available(self, tmp_path):
+        """Verify update check returns True for newer version."""
+        with patch('platform.system', return_value='Darwin'):
+            instance = fuwarp.FuwarpPython(mode='status')
+
+        # Mock remote file with a version far in the future
+        remote_content = b'__version__ = "2099.12.31"\n# rest of file...'
+
+        with patch('urllib.request.urlopen') as mock_urlopen, \
+             patch.object(fuwarp, '__version__', '2025.1.1'):
+            mock_response = MagicMock()
+            mock_response.read.return_value = remote_content
+            mock_response.__enter__ = MagicMock(return_value=mock_response)
+            mock_response.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_response
+
+            result = instance.check_for_updates()
+            assert result is True
+
+    def test_check_for_updates_same_version(self, tmp_path):
+        """Verify update check returns False for same version."""
+        with patch('platform.system', return_value='Darwin'):
+            instance = fuwarp.FuwarpPython(mode='status')
+
+        # Mock remote file with same version as local
+        remote_content = f'__version__ = "{fuwarp.__version__}"\n# rest...'.encode()
+
+        with patch('urllib.request.urlopen') as mock_urlopen:
+            mock_response = MagicMock()
+            mock_response.read.return_value = remote_content
+            mock_response.__enter__ = MagicMock(return_value=mock_response)
+            mock_response.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_response
+
+            result = instance.check_for_updates()
+            assert result is False
+
+    def test_check_for_updates_older_remote(self, tmp_path):
+        """Verify update check returns False if remote is older."""
+        with patch('platform.system', return_value='Darwin'):
+            instance = fuwarp.FuwarpPython(mode='status')
+
+        remote_content = b'__version__ = "2020.1.1"\n# rest...'
+
+        with patch('urllib.request.urlopen') as mock_urlopen, \
+             patch.object(fuwarp, '__version__', '2025.12.18'):
+            mock_response = MagicMock()
+            mock_response.read.return_value = remote_content
+            mock_response.__enter__ = MagicMock(return_value=mock_response)
+            mock_response.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_response
+
+            result = instance.check_for_updates()
+            assert result is False
+
+    def test_check_for_updates_no_version_in_remote(self, tmp_path):
+        """Verify graceful handling when remote has no version."""
+        with patch('platform.system', return_value='Darwin'):
+            instance = fuwarp.FuwarpPython(mode='status')
+
+        remote_content = b'# file without __version__\nprint("hello")'
+
+        with patch('urllib.request.urlopen') as mock_urlopen:
+            mock_response = MagicMock()
+            mock_response.read.return_value = remote_content
+            mock_response.__enter__ = MagicMock(return_value=mock_response)
+            mock_response.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_response
+
+            result = instance.check_for_updates()
+            assert result is False  # Graceful failure
 
 
 if __name__ == '__main__':
