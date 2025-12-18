@@ -238,6 +238,13 @@ class FuwarpPython:
                 'setup_func': self.setup_git_cert,
                 'check_func': self.check_git_status,
                 'description': 'Git version control'
+            },
+            'curl': {
+                'name': 'curl',
+                'tags': ['curl', 'http'],
+                'setup_func': self.setup_curl_cert,
+                'check_func': self.check_curl_status,
+                'description': 'curl HTTP client'
             }
         }
         
@@ -362,7 +369,9 @@ class FuwarpPython:
                 self.print_warn("=" * 60)
                 self.print_warn("A newer version of fuwarp.py is available!")
                 self.print_warn("Update before running --fix to ensure best results:")
-                self.print_info("  curl -LsSf https://raw.githubusercontent.com/aberoham/fuwarp/main/fuwarp.py -o fuwarp.py")
+                # Use -k to skip cert verification since user's curl may be broken
+                # (which is likely why they're running this script)
+                self.print_info("  curl -kLsSf https://raw.githubusercontent.com/aberoham/fuwarp/main/fuwarp.py -o fuwarp.py")
                 self.print_warn("=" * 60)
                 print()
                 return True
@@ -1531,34 +1540,68 @@ class FuwarpPython:
         subprocess.run(['git', 'config', '--global', 'http.sslCAInfo', git_bundle], capture_output=True, text=True)
         self.print_info(f"Configured git http.sslCAInfo to: {git_bundle}")
 
-    # TODO: This function is not registered in tools_registry and is never called.
-    # See https://github.com/aberoham/fuwarp/issues/27 for discussion on whether to
-    # properly register curl as a supported tool or remove this dead code.
     def setup_curl_cert(self):
-        """Repoint CURL_CA_BUNDLE to a managed bundle if current setting is suspicious."""
+        """Setup curl certificate configuration.
+
+        Handles multiple scenarios:
+        1. curl works via system trust (SecureTransport on macOS) - skip
+        2. CURL_CA_BUNDLE points to suspicious/broken bundle - fix it
+        3. CURL_CA_BUNDLE points to non-existent file - fix it
+        4. curl fails with no CURL_CA_BUNDLE set - configure it
+        """
         if not self.command_exists('curl'):
             return
-        curl_env = os.environ.get('CURL_CA_BUNDLE', '')
-        if not curl_env:
+
+        # First check if curl already works (e.g., via system trust store)
+        # If it works, don't add unnecessary configuration
+        verify_result = self.verify_connection("curl")
+        if verify_result == "WORKING":
+            self.print_debug("curl already works via system trust, skipping configuration")
             return
-        if not os.path.exists(curl_env):
-            return
-        suspicious, reason = self.is_suspicious_full_bundle(curl_env, CERT_PATH)
+
         curl_bundle = os.path.expanduser("~/.cloudflare-warp/curl/ca-bundle.pem")
-        if suspicious:
+        curl_env = os.environ.get('CURL_CA_BUNDLE', '')
+
+        # Case 1: CURL_CA_BUNDLE is set but points to suspicious or non-existent file
+        if curl_env:
+            if not os.path.exists(curl_env):
+                self.print_info("Configuring curl certificate bundle...")
+                self.print_warn(f"CURL_CA_BUNDLE points to non-existent file: {curl_env}")
+                if not self.is_install_mode():
+                    self.print_action(f"Would create curl CA bundle at {curl_bundle}")
+                    self.print_action(f"Would repoint CURL_CA_BUNDLE to {curl_bundle}")
+                    return
+            else:
+                suspicious, reason = self.is_suspicious_full_bundle(curl_env, CERT_PATH)
+                if suspicious:
+                    self.print_info("Configuring curl certificate bundle...")
+                    self.print_warn(f"Existing CURL_CA_BUNDLE looks suspiciously small ({reason})")
+                    if not self.is_install_mode():
+                        self.print_action(f"Would create curl CA bundle at {curl_bundle}")
+                        self.print_action(f"Would repoint CURL_CA_BUNDLE to {curl_bundle}")
+                        return
+                else:
+                    # Bundle exists and looks OK but curl still doesn't work
+                    # This might be a different issue - don't touch it
+                    self.print_warn("curl connection failed but CURL_CA_BUNDLE looks valid")
+                    self.print_info("This may require manual investigation")
+                    return
+        else:
+            # Case 2: No CURL_CA_BUNDLE set and curl doesn't work
             self.print_info("Configuring curl certificate bundle...")
-            self.print_warn(f"Existing CURL_CA_BUNDLE looks suspiciously small ({reason})")
             if not self.is_install_mode():
                 self.print_action(f"Would create curl CA bundle at {curl_bundle}")
-                self.print_action(f"Would repoint CURL_CA_BUNDLE to {curl_bundle}")
+                self.print_action(f"Would set CURL_CA_BUNDLE={curl_bundle}")
                 return
-            os.makedirs(os.path.dirname(curl_bundle), exist_ok=True)
-            self.create_bundle_with_system_certs(curl_bundle)
-            self.safe_append_certificate(CERT_PATH, curl_bundle)
-            shell_type = self.detect_shell()
-            shell_config = self.get_shell_config(shell_type)
-            self.add_to_shell_config("CURL_CA_BUNDLE", curl_bundle, shell_config)
-            self.print_info(f"Repointed CURL_CA_BUNDLE to: {curl_bundle}")
+
+        # Create the bundle and configure
+        os.makedirs(os.path.dirname(curl_bundle), exist_ok=True)
+        self.create_bundle_with_system_certs(curl_bundle)
+        self.safe_append_certificate(CERT_PATH, curl_bundle)
+        shell_type = self.detect_shell()
+        shell_config = self.get_shell_config(shell_type)
+        self.add_to_shell_config("CURL_CA_BUNDLE", curl_bundle, shell_config)
+        self.print_info(f"Configured CURL_CA_BUNDLE to: {curl_bundle}")
 
     def check_git_status(self, temp_warp_cert):
         """Check Git configuration status for http.sslCAInfo."""
@@ -1585,6 +1628,57 @@ class FuwarpPython:
                 has_issues = True
         else:
             self.print_info("  - Git not installed")
+        return has_issues
+
+    def check_curl_status(self, temp_warp_cert):
+        """Check curl configuration status."""
+        has_issues = False
+        if self.command_exists('curl'):
+            # First, verify if curl can actually connect
+            verify_result = self.verify_connection("curl")
+
+            if verify_result == "WORKING":
+                self.print_info("  ✓ curl can connect through WARP")
+
+                # Check if it's using SecureTransport (macOS system curl)
+                try:
+                    result = subprocess.run(['curl', '--version'], capture_output=True, text=True)
+                    if 'SecureTransport' in result.stdout:
+                        self.print_info("  ✓ Using macOS system curl with SecureTransport (uses system keychain)")
+                    elif os.environ.get('CURL_CA_BUNDLE'):
+                        curl_bundle = os.environ['CURL_CA_BUNDLE']
+                        self.print_info(f"  - CURL_CA_BUNDLE is set to: {curl_bundle}")
+                        # Check if the bundle is suspicious
+                        if os.path.exists(curl_bundle):
+                            suspicious, reason = self.is_suspicious_full_bundle(curl_bundle, temp_warp_cert)
+                            if suspicious:
+                                self.print_warn(f"  ⚠ CURL_CA_BUNDLE looks suspiciously small ({reason})")
+                                self.print_action("    Run with --fix to repoint to a full CA bundle")
+                                has_issues = True
+                    else:
+                        self.print_info("  - Using system certificate trust (no custom CA needed)")
+                except Exception:
+                    pass
+            else:
+                # curl doesn't work, check configuration
+                curl_bundle = os.environ.get('CURL_CA_BUNDLE', '')
+                if curl_bundle:
+                    if os.path.exists(curl_bundle):
+                        suspicious, reason = self.is_suspicious_full_bundle(curl_bundle, temp_warp_cert)
+                        if suspicious:
+                            self.print_warn(f"  ✗ CURL_CA_BUNDLE points to suspicious bundle ({reason})")
+                            self.print_action("    Run with --fix to create a full CA bundle")
+                        else:
+                            self.print_warn("  ✗ curl configured but connection test failed")
+                    else:
+                        self.print_warn(f"  ✗ CURL_CA_BUNDLE points to non-existent file: {curl_bundle}")
+                    has_issues = True
+                else:
+                    self.print_warn("  ✗ curl connection test failed")
+                    self.print_action("    Run with --fix to configure CURL_CA_BUNDLE")
+                    has_issues = True
+        else:
+            self.print_info("  - curl not installed")
         return has_issues
 
     def get_jenv_java_homes(self):
@@ -2968,31 +3062,6 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
                 tool_has_issues = tool_info['check_func'](temp_warp_cert)
                 if tool_has_issues:
                     has_issues = True
-            print()
-        # Check curl configuration if not filtering
-        if not self.selected_tools:
-            self.print_status("curl Configuration:")
-            if self.command_exists('curl'):
-                verify_result = self.verify_connection("curl")
-                if verify_result == "WORKING":
-                    self.print_info("  ✓ curl can connect through WARP")
-                    # Check if it's using SecureTransport (macOS system curl)
-                    try:
-                        result = subprocess.run(['curl', '--version'], capture_output=True, text=True)
-                        if 'SecureTransport' in result.stdout:
-                            self.print_info("  ✓ Using macOS system curl with SecureTransport (uses system keychain)")
-                        elif os.environ.get('CURL_CA_BUNDLE'):
-                            self.print_info(f"  ✓ CURL_CA_BUNDLE is set to: {os.environ['CURL_CA_BUNDLE']}")
-                    except Exception:
-                        pass
-                else:
-                    if os.environ.get('CURL_CA_BUNDLE'):
-                        self.print_info("  ✓ CURL_CA_BUNDLE is set")
-                    else:
-                        self.print_warn("  ✗ curl connection test failed and CURL_CA_BUNDLE not set")
-                        has_issues = True
-            else:
-                self.print_info("  - curl not installed")
             print()
         # Check Docker/Container certificate location if not filtering
         if not self.selected_tools:
