@@ -1106,8 +1106,8 @@ class FuwarpPython:
             if os.path.exists(node_extra_ca_certs):
                 # Check if the file contains our certificate using normalized comparison
                 if self.certificate_exists_in_file(CERT_PATH, node_extra_ca_certs):
-                    # Certificate already exists, nothing to do
-                    return
+                    # Certificate already exists in NODE_EXTRA_CA_CERTS, skip to npm setup
+                    pass
                 else:
                     needs_setup = True
                     self.print_info("Configuring Node.js certificate...")

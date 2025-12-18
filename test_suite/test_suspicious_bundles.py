@@ -168,3 +168,52 @@ class TestSuspiciousBundles(FuwarpTestCase):
             instance = self.create_fuwarp_instance(mode='status')
             has_issues = instance.check_git_status(None)
             assert has_issues is True
+
+    def test_npm_repoint_even_when_node_extra_ca_certs_already_has_cert(self):
+        """Regression test for issue #37: npm cafile fix should run even when
+        NODE_EXTRA_CA_CERTS already contains the WARP certificate.
+
+        Previously, setup_node_cert() would early-return when the certificate
+        was already in NODE_EXTRA_CA_CERTS, skipping the call to setup_npm_cafile().
+        This left npm with a suspicious single-cert bundle.
+        """
+        node_extra_ca = f"{mock_data.HOME_DIR}/.cloudflare-warp/cloudflare-warp.pem"
+        npm_current = node_extra_ca  # npm cafile points to same small file
+        npm_managed = f"{mock_data.HOME_DIR}/.cloudflare-warp/npm/ca-bundle.pem"
+        cert_path = f"{mock_data.HOME_DIR}/.cloudflare-ca.pem"
+
+        mock_config = (
+            MockBuilder()
+            .with_env_var('HOME', mock_data.HOME_DIR)
+            .with_env_var('SHELL', '/bin/zsh')
+            # NODE_EXTRA_CA_CERTS already set to a file with the cert
+            .with_env_var('NODE_EXTRA_CA_CERTS', node_extra_ca)
+            .with_tools('node', 'npm')
+            # Set up CERT_PATH with the certificate (so certificate_exists_in_file works)
+            .with_file(cert_path, mock_data.MOCK_CERTIFICATE)
+            # The node bundle contains the same WARP cert (suspicious, but has cert)
+            .with_file(node_extra_ca, mock_data.MOCK_CERTIFICATE)
+            # System CA bundle for creating full npm bundle
+            .with_file('/etc/ssl/cert.pem', mock_data.SAMPLE_CA_BUNDLE)
+            # npm config get cafile returns the same suspicious file
+            .with_subprocess_response(stdout=npm_current)
+            # npm config set cafile <managed>
+            .with_subprocess_response(returncode=0)
+            .build()
+        )
+
+        with mock_fuwarp_environment(mock_config) as mocks:
+            # Patch CERT_PATH to match our mocked home directory
+            # (CERT_PATH is set at module import time before mocks)
+            import fuwarp
+            with patch.object(fuwarp, 'CERT_PATH', cert_path):
+                instance = self.create_fuwarp_instance(mode='install')
+                with patch('pathlib.Path.touch'):
+                    instance.setup_node_cert()
+                # Key assertion: npm should be repointed to managed bundle
+                # even though NODE_EXTRA_CA_CERTS already had the cert
+                from helpers import assert_subprocess_called_with
+                assert_subprocess_called_with(
+                    mocks['subprocess'],
+                    ['npm', 'config', 'set', 'cafile', npm_managed]
+                )
