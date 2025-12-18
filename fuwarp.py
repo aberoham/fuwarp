@@ -1221,7 +1221,11 @@ class FuwarpPython:
         # Setup npm cafile if npm is available
         if self.command_exists('npm'):
             self.setup_npm_cafile()
-    
+
+        # Cleanup stale yarn/pnpm configs that might override NODE_EXTRA_CA_CERTS
+        self.cleanup_yarn_cafile()
+        self.cleanup_pnpm_cafile()
+
     def setup_npm_cafile(self):
         """Setup npm cafile."""
         # Check current npm cafile setting
@@ -1339,7 +1343,110 @@ class FuwarpPython:
                             self.print_error("Failed to configure npm cafile")
                     except Exception:
                         pass
-    
+
+    def cleanup_yarn_cafile(self):
+        """Check and clean up yarn cafile configuration.
+
+        Yarn respects NODE_EXTRA_CA_CERTS, so explicit cafile configs are
+        usually unnecessary and often point to stale/broken paths from
+        old scripts (like warp.sh) or manual configuration.
+        """
+        if not self.command_exists('yarn'):
+            return
+
+        try:
+            # Detect yarn version (v1 vs Berry/v2+)
+            result = subprocess.run(['yarn', '--version'], capture_output=True, text=True)
+            yarn_version = result.stdout.strip()
+            if not yarn_version:
+                return
+            is_berry = yarn_version[0] in ('2', '3', '4')
+
+            # Get current cafile setting
+            if is_berry:
+                config_key = 'httpsCaFilePath'
+                delete_cmd = ['yarn', 'config', 'unset', 'httpsCaFilePath']
+            else:
+                config_key = 'cafile'
+                delete_cmd = ['yarn', 'config', 'delete', 'cafile']
+
+            result = subprocess.run(['yarn', 'config', 'get', config_key],
+                                   capture_output=True, text=True)
+            current_cafile = result.stdout.strip()
+
+            # Check if set to something problematic
+            if not current_cafile or current_cafile in ['undefined', '']:
+                return  # Not set, nothing to do
+
+            # Check if it points to our managed npm bundle (that's fine)
+            npm_bundle = os.path.expanduser("~/.cloudflare-warp/npm/ca-bundle.pem")
+            if current_cafile == npm_bundle:
+                return  # Points to fuwarp-managed bundle, that's OK
+
+            # Check if file exists and contains WARP cert
+            if os.path.exists(current_cafile) and self.certificate_exists_in_file(CERT_PATH, current_cafile):
+                return  # Working config, leave it
+
+            # Problematic config - delete it
+            self.print_info("Configuring yarn...")
+            if not os.path.exists(current_cafile):
+                self.print_warn(f"yarn {config_key} points to non-existent file: {current_cafile}")
+            else:
+                self.print_warn(f"yarn {config_key} doesn't contain WARP certificate: {current_cafile}")
+
+            if not self.is_install_mode():
+                self.print_action(f"Would remove yarn {config_key} config")
+                self.print_action("NODE_EXTRA_CA_CERTS will handle certificate trust for yarn")
+            else:
+                subprocess.run(delete_cmd, capture_output=True)
+                self.print_info(f"Removed yarn {config_key} config")
+                self.print_info("yarn will now use NODE_EXTRA_CA_CERTS for certificate trust")
+        except Exception as e:
+            self.print_debug(f"Error checking yarn cafile: {e}")
+
+    def cleanup_pnpm_cafile(self):
+        """Check and clean up pnpm cafile configuration.
+
+        pnpm respects NODE_EXTRA_CA_CERTS, so explicit cafile configs are
+        usually unnecessary and often point to stale/broken paths.
+        """
+        if not self.command_exists('pnpm'):
+            return
+
+        try:
+            result = subprocess.run(['pnpm', 'config', 'get', 'cafile'],
+                                   capture_output=True, text=True)
+            current_cafile = result.stdout.strip()
+
+            if not current_cafile or current_cafile in ['undefined', '']:
+                return  # Not set, nothing to do
+
+            # Check if it points to our managed npm bundle (that's fine)
+            npm_bundle = os.path.expanduser("~/.cloudflare-warp/npm/ca-bundle.pem")
+            if current_cafile == npm_bundle:
+                return  # Points to fuwarp-managed bundle, that's OK
+
+            # Check if file exists and contains WARP cert
+            if os.path.exists(current_cafile) and self.certificate_exists_in_file(CERT_PATH, current_cafile):
+                return  # Working config, leave it
+
+            # Problematic config - delete it
+            self.print_info("Configuring pnpm...")
+            if not os.path.exists(current_cafile):
+                self.print_warn(f"pnpm cafile points to non-existent file: {current_cafile}")
+            else:
+                self.print_warn(f"pnpm cafile doesn't contain WARP certificate: {current_cafile}")
+
+            if not self.is_install_mode():
+                self.print_action("Would remove pnpm cafile config")
+                self.print_action("NODE_EXTRA_CA_CERTS will handle certificate trust for pnpm")
+            else:
+                subprocess.run(['pnpm', 'config', 'delete', 'cafile'], capture_output=True)
+                self.print_info("Removed pnpm cafile config")
+                self.print_info("pnpm will now use NODE_EXTRA_CA_CERTS for certificate trust")
+        except Exception as e:
+            self.print_debug(f"Error checking pnpm cafile: {e}")
+
     def setup_python_cert(self):
         """Setup Python certificate."""
         if not self.command_exists('python3') and not self.command_exists('python'):
@@ -2560,6 +2667,65 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
                     else:
                         self.print_warn("  ✗ npm cafile not configured")
                         has_issues = True
+                except Exception:
+                    pass
+
+            # Check yarn for stale cafile config
+            if self.command_exists('yarn'):
+                try:
+                    result = subprocess.run(['yarn', '--version'], capture_output=True, text=True)
+                    yarn_version = result.stdout.strip()
+                    is_berry = yarn_version and yarn_version[0] in ('2', '3', '4')
+                    config_key = 'httpsCaFilePath' if is_berry else 'cafile'
+
+                    result = subprocess.run(['yarn', 'config', 'get', config_key],
+                                           capture_output=True, text=True)
+                    yarn_cafile = result.stdout.strip()
+
+                    if yarn_cafile and yarn_cafile not in ['undefined', '']:
+                        npm_bundle = os.path.expanduser("~/.cloudflare-warp/npm/ca-bundle.pem")
+                        if yarn_cafile == npm_bundle:
+                            self.print_info(f"  ✓ yarn {config_key} points to managed npm bundle")
+                        elif os.path.exists(yarn_cafile):
+                            if self.certificate_exists_in_file(temp_warp_cert, yarn_cafile):
+                                self.print_info(f"  ✓ yarn {config_key} contains current WARP certificate")
+                            else:
+                                self.print_warn(f"  ⚠ yarn {config_key} doesn't contain WARP certificate: {yarn_cafile}")
+                                self.print_action("    Run with --fix to remove this stale configuration")
+                                has_issues = True
+                        else:
+                            self.print_warn(f"  ⚠ yarn {config_key} points to non-existent file: {yarn_cafile}")
+                            self.print_action("    Run with --fix to remove this stale configuration")
+                            has_issues = True
+                    else:
+                        self.print_info("  ✓ yarn using NODE_EXTRA_CA_CERTS (no explicit cafile)")
+                except Exception:
+                    pass
+
+            # Check pnpm for stale cafile config
+            if self.command_exists('pnpm'):
+                try:
+                    result = subprocess.run(['pnpm', 'config', 'get', 'cafile'],
+                                           capture_output=True, text=True)
+                    pnpm_cafile = result.stdout.strip()
+
+                    if pnpm_cafile and pnpm_cafile not in ['undefined', '']:
+                        npm_bundle = os.path.expanduser("~/.cloudflare-warp/npm/ca-bundle.pem")
+                        if pnpm_cafile == npm_bundle:
+                            self.print_info("  ✓ pnpm cafile points to managed npm bundle")
+                        elif os.path.exists(pnpm_cafile):
+                            if self.certificate_exists_in_file(temp_warp_cert, pnpm_cafile):
+                                self.print_info("  ✓ pnpm cafile contains current WARP certificate")
+                            else:
+                                self.print_warn(f"  ⚠ pnpm cafile doesn't contain WARP certificate: {pnpm_cafile}")
+                                self.print_action("    Run with --fix to remove this stale configuration")
+                                has_issues = True
+                        else:
+                            self.print_warn(f"  ⚠ pnpm cafile points to non-existent file: {pnpm_cafile}")
+                            self.print_action("    Run with --fix to remove this stale configuration")
+                            has_issues = True
+                    else:
+                        self.print_info("  ✓ pnpm using NODE_EXTRA_CA_CERTS (no explicit cafile)")
                 except Exception:
                     pass
         else:
