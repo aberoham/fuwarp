@@ -21,7 +21,7 @@ from datetime import datetime
 # Version and metadata
 __description__ = "Cloudflare WARP Certificate Fixer Upper for macOS and Linux"
 __author__ = "Ingersoll & Claude"
-__version__ = "2025.12.18"  # CalVer: YYYY.MM.DD (auto-updated on release)
+__version__ = "2025.12.18.1"  # CalVer: YYYY.MM.DD (auto-updated on release)
 
 
 def parse_calver(version_str):
