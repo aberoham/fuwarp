@@ -1297,14 +1297,20 @@ class FuwarpPython:
         if not self.command_exists('python3') and not self.command_exists('python'):
             self.print_info("Python not found, skipping Python setup")
             return
-        
+
+        # Note: Unlike gcloud which uses a consistent system trust store, different
+        # Python installations (system, Homebrew, venvs) may have different trust
+        # configurations. We intentionally do NOT skip based on verify_connection()
+        # because environment variables ensure ALL Python environments work, not just
+        # the one running this script. Env vars are inherited by venvs and child processes.
+
         shell_type = self.detect_shell()
         shell_config = self.get_shell_config(shell_type)
-        
+
         # Create combined certificate bundle for Python
         python_bundle = os.path.expanduser("~/.python-ca-bundle.pem")
         needs_setup = False
-        
+
         requests_ca_bundle = os.environ.get('REQUESTS_CA_BUNDLE', '')
         
         if requests_ca_bundle:
@@ -1397,11 +1403,18 @@ class FuwarpPython:
         if not self.command_exists('gcloud'):
             self.print_info("gcloud not found, skipping gcloud setup")
             return
-        
+
+        # First check if gcloud already works (e.g., via system trust store)
+        # If it works, don't add unnecessary configuration
+        verify_result = self.verify_connection("gcloud")
+        if verify_result == "WORKING":
+            self.print_debug("gcloud already works via system trust, skipping configuration")
+            return
+
         gcloud_cert_dir = os.path.expanduser("~/.config/gcloud/certs")
         gcloud_bundle = os.path.join(gcloud_cert_dir, "combined-ca-bundle.pem")
         needs_setup = False
-        
+
         # Check current gcloud custom CA setting
         try:
             result = subprocess.run(
@@ -1798,10 +1811,17 @@ class FuwarpPython:
         """Setup wget certificate."""
         if not self.command_exists('wget'):
             return
-        
+
+        # First check if wget already works (e.g., via system trust store)
+        # If it works, don't add unnecessary configuration
+        verify_result = self.verify_connection("wget")
+        if verify_result == "WORKING":
+            self.print_debug("wget already works via system trust, skipping configuration")
+            return
+
         wgetrc_path = os.path.expanduser("~/.wgetrc")
         config_line = f"ca_certificate={CERT_PATH}"
-        
+
         if os.path.exists(wgetrc_path):
             with open(wgetrc_path, 'r') as f:
                 content = f.read()
@@ -1868,11 +1888,16 @@ class FuwarpPython:
         if not self.command_exists('podman'):
             return
 
-        self.print_info("Configuring Podman certificate...")
-
         # Primary method: Install to ~/.docker/certs.d/ (shared with other container tools)
         docker_certs_dir = os.path.expanduser("~/.docker/certs.d")
         cert_dest = os.path.join(docker_certs_dir, "cloudflare-warp.crt")
+
+        # Check if certificate is already installed with correct content
+        if os.path.exists(cert_dest) and self.certificate_likely_exists_in_file(CERT_PATH, cert_dest):
+            self.print_debug("Podman certificate already installed, skipping configuration")
+            return
+
+        self.print_info("Configuring Podman certificate...")
 
         # Check if VM is currently running
         try:
@@ -1931,11 +1956,16 @@ class FuwarpPython:
         if not self.command_exists('rdctl'):
             return
 
-        self.print_info("Configuring Rancher Desktop certificate...")
-
         # Primary method: Install to ~/.docker/certs.d/ (shared with other container tools)
         docker_certs_dir = os.path.expanduser("~/.docker/certs.d")
         cert_dest = os.path.join(docker_certs_dir, "cloudflare-warp.crt")
+
+        # Check if certificate is already installed with correct content
+        if os.path.exists(cert_dest) and self.certificate_likely_exists_in_file(CERT_PATH, cert_dest):
+            self.print_debug("Rancher Desktop certificate already installed, skipping configuration")
+            return
+
+        self.print_info("Configuring Rancher Desktop certificate...")
 
         # Check if Rancher Desktop is running
         try:
@@ -2062,12 +2092,17 @@ class FuwarpPython:
         if not self.command_exists('colima'):
             return
 
-        self.print_info("Configuring Colima certificate...")
-
         # Primary method: Install to ~/.docker/certs.d/ (persistent, works offline)
         # Colima automatically mounts this directory and applies certs on startup
         docker_certs_dir = os.path.expanduser("~/.docker/certs.d")
         cert_dest = os.path.join(docker_certs_dir, "cloudflare-warp.crt")
+
+        # Check if certificate is already installed with correct content
+        if os.path.exists(cert_dest) and self.certificate_likely_exists_in_file(CERT_PATH, cert_dest):
+            self.print_debug("Colima certificate already installed, skipping configuration")
+            return
+
+        self.print_info("Configuring Colima certificate...")
 
         # Check if VM is currently running
         try:
@@ -2667,24 +2702,38 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
         """Check wget configuration status."""
         has_issues = False
         if self.command_exists('wget'):
-            wgetrc_path = os.path.expanduser("~/.wgetrc")
-            if os.path.exists(wgetrc_path):
-                with open(wgetrc_path, 'r') as f:
-                    content = f.read()
-                if "ca_certificate=" in content and CERT_PATH in content:
-                    self.print_info("  ✓ wget configured with Cloudflare certificate")
-                    verify_result = self.verify_connection("wget")
-                    if verify_result == "WORKING":
-                        self.print_info("  ✓ wget can connect through WARP")
+            # First, verify if wget can actually connect
+            verify_result = self.verify_connection("wget")
+
+            if verify_result == "WORKING":
+                self.print_info("  ✓ wget can connect through WARP")
+
+                # Check config status (informational only)
+                wgetrc_path = os.path.expanduser("~/.wgetrc")
+                if os.path.exists(wgetrc_path):
+                    with open(wgetrc_path, 'r') as f:
+                        content = f.read()
+                    if "ca_certificate=" in content and CERT_PATH in content:
+                        self.print_info("  ✓ wget configured with Cloudflare certificate")
                     else:
-                        self.print_warn("  ✗ wget connection test failed")
+                        self.print_info("  - Using system certificate trust (no custom CA needed)")
+                else:
+                    self.print_info("  - Using system certificate trust (no custom CA needed)")
+            else:
+                # wget doesn't work, check configuration
+                wgetrc_path = os.path.expanduser("~/.wgetrc")
+                if os.path.exists(wgetrc_path):
+                    with open(wgetrc_path, 'r') as f:
+                        content = f.read()
+                    if "ca_certificate=" in content and CERT_PATH in content:
+                        self.print_warn("  ✗ wget configured but connection test failed")
+                        has_issues = True
+                    else:
+                        self.print_warn("  ✗ wget not configured with Cloudflare certificate")
                         has_issues = True
                 else:
-                    self.print_warn("  ✗ wget not configured with Cloudflare certificate")
+                    self.print_warn("  ✗ wget not configured")
                     has_issues = True
-            else:
-                self.print_warn("  ✗ wget not configured")
-                has_issues = True
         else:
             self.print_info("  - wget not installed")
         return has_issues
