@@ -1104,14 +1104,8 @@ class FuwarpPython:
         
         if node_extra_ca_certs:
             if os.path.exists(node_extra_ca_certs):
-                # Check if the file contains our certificate
-                with open(CERT_PATH, 'r') as f:
-                    cert_content = f.read()
-                
-                with open(node_extra_ca_certs, 'r') as f:
-                    file_content = f.read()
-                
-                if cert_content in file_content:
+                # Check if the file contains our certificate using normalized comparison
+                if self.certificate_exists_in_file(CERT_PATH, node_extra_ca_certs):
                     # Certificate already exists, nothing to do
                     return
                 else:
@@ -1214,14 +1208,8 @@ class FuwarpPython:
                         self.print_info(f"Repointed npm cafile to managed bundle: {npm_bundle}")
                     return
 
-                # Check if the file contains our certificate
-                with open(CERT_PATH, 'r') as f:
-                    cert_content = f.read()
-
-                with open(current_cafile, 'r') as f:
-                    file_content = f.read()
-
-                if cert_content not in file_content:
+                # Check if the file contains our certificate using normalized comparison
+                if not self.certificate_exists_in_file(CERT_PATH, current_cafile):
                     needs_setup = True
                     self.print_info("Configuring npm certificate...")
                     self.print_warn("Current npm cafile doesn't contain Cloudflare certificate")
@@ -1371,14 +1359,8 @@ class FuwarpPython:
                             self.print_info(f"Repointed REQUESTS_CA_BUNDLE to managed bundle: {python_bundle}")
                         return
 
-                    # Check if the file contains our certificate
-                    with open(CERT_PATH, 'r') as f:
-                        cert_content = f.read()
-
-                    with open(requests_ca_bundle, 'r') as f:
-                        file_content = f.read()
-
-                    if cert_content not in file_content:
+                    # Check if the file contains our certificate using normalized comparison
+                    if not self.certificate_exists_in_file(CERT_PATH, requests_ca_bundle):
                         needs_setup = True
                         self.print_info("Configuring Python certificate...")
                         self.print_info(f"REQUESTS_CA_BUNDLE is already set to: {requests_ca_bundle}")
@@ -1450,12 +1432,8 @@ class FuwarpPython:
                     self.print_info(f"Repointed gcloud custom CA file to managed bundle: {gcloud_bundle}")
                 return
 
-            # Check if current CA file contains our certificate
-            with open(CERT_PATH, 'r') as f:
-                cert_content = f.read()
-            with open(current_ca_file, 'r') as f:
-                file_content = f.read()
-            if cert_content not in file_content:
+            # Check if current CA file contains our certificate using normalized comparison
+            if not self.certificate_exists_in_file(CERT_PATH, current_ca_file):
                 needs_setup = True
         else:
             needs_setup = True
