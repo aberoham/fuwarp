@@ -84,9 +84,11 @@ class TestSuspiciousBundles(FuwarpTestCase):
             .with_tools('gcloud')
             .with_file(gcloud_current, mock_data.MOCK_CERTIFICATE)
             .with_file('/etc/ssl/cert.pem', mock_data.SAMPLE_CA_BUNDLE)
-            # gcloud config get
+            # verify_connection("gcloud") uses: gcloud projects list --limit=1
+            .with_subprocess_response(returncode=1, stderr="SSL: CERTIFICATE_VERIFY_FAILED")
+            # gcloud config get-value core/custom_ca_certs_file
             .with_subprocess_response(stdout=gcloud_current)
-            # gcloud config set
+            # gcloud config set core/custom_ca_certs_file <managed>
             .with_subprocess_response(returncode=0)
             .build()
         )

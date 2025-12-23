@@ -1,0 +1,48 @@
+name: TLS Proxy Integration Tests
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'fuwarp.py'
+      - 'test_suite/tls_proxy_integration/**'
+      - '.github/workflows/tls-proxy-integration.yml'
+  workflow_dispatch:
+
+jobs:
+  tls-proxy-macos:
+    runs-on: macos-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install test dependencies
+        working-directory: test_suite
+        run: |
+          uv venv
+          source .venv/bin/activate
+          uv pip install -r requirements.txt
+          uv pip install -r tls_proxy_integration/requirements.txt
+
+      - name: Run TLS proxy integration tests
+        working-directory: test_suite
+        env:
+          FUWARP_RUN_TLS_PROXY_TESTS: '1'
+        run: |
+          source .venv/bin/activate
+          python -m pytest tls_proxy_integration -v --tb=short -x
+

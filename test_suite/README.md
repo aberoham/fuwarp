@@ -62,6 +62,16 @@ python -m pytest test_fuwarp_integration.py -x
 python -m pytest test_fuwarp_integration.py --cov=fuwarp --cov-report=term-missing
 ```
 
+### TLS Proxy (MITM) Integration Tests
+
+These are opt-in, networked tests that use `mitmproxy` to simulate a TLS
+intercepting proxy and verify `fuwarp.py` end-to-end.
+
+```bash
+uv pip install -r tls_proxy_integration/requirements.txt
+FUWARP_RUN_TLS_PROXY_TESTS=1 python -m pytest tls_proxy_integration -v
+```
+
 ### Debugging Tests
 
 ```bash
