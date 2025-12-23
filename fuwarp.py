@@ -1549,6 +1549,7 @@ class FuwarpPython:
 
         # Create combined certificate bundle for Python
         python_bundle = os.path.expanduser("~/.python-ca-bundle.pem")
+        managed_python_dir = os.path.realpath(os.path.expanduser("~/.cloudflare-warp/python"))
         needs_setup = False
 
         requests_ca_bundle = os.environ.get('REQUESTS_CA_BUNDLE', '')
@@ -1574,7 +1575,9 @@ class FuwarpPython:
                                 try:
                                     shutil.copy(requests_ca_bundle, new_path)
                                 except Exception:
-                                    Path(new_path).touch()
+                                    # If we can't copy the existing bundle (e.g. unreadable),
+                                    # fall back to initializing from system certificates.
+                                    self.create_bundle_with_system_certs(new_path)
                             
                             # Append certificate to the new path
                             self.safe_append_certificate(CERT_PATH, new_path)
@@ -1593,16 +1596,28 @@ class FuwarpPython:
                         needs_setup = True
                         self.print_info("Configuring Python certificate...")
                         self.print_warn(f"REQUESTS_CA_BUNDLE looks suspiciously small ({reason})")
+
+                        # If the user is already pointing at a fuwarp-managed path, repair in place.
+                        requests_bundle_real = os.path.realpath(os.path.expanduser(requests_ca_bundle))
+                        target_bundle = requests_ca_bundle
+                        if not requests_bundle_real.startswith(managed_python_dir + os.sep):
+                            target_bundle = python_bundle
+
                         if not self.is_install_mode():
-                            self.print_action(f"Would create full CA bundle at {python_bundle}")
-                            self.print_action(f"Would repoint REQUESTS_CA_BUNDLE to {python_bundle}")
+                            self.print_action(f"Would create full CA bundle at {target_bundle}")
+                            if target_bundle != requests_ca_bundle:
+                                self.print_action(f"Would repoint REQUESTS_CA_BUNDLE to {target_bundle}")
                         else:
-                            self.create_bundle_with_system_certs(python_bundle)
-                            self.safe_append_certificate(CERT_PATH, python_bundle)
-                            self.add_to_shell_config("REQUESTS_CA_BUNDLE", python_bundle, shell_config)
-                            self.add_to_shell_config("SSL_CERT_FILE", python_bundle, shell_config)
-                            self.add_to_shell_config("CURL_CA_BUNDLE", python_bundle, shell_config)
-                            self.print_info(f"Repointed REQUESTS_CA_BUNDLE to managed bundle: {python_bundle}")
+                            os.makedirs(os.path.dirname(target_bundle), exist_ok=True)
+                            self.create_bundle_with_system_certs(target_bundle)
+                            self.safe_append_certificate(CERT_PATH, target_bundle)
+                            self.add_to_shell_config("REQUESTS_CA_BUNDLE", target_bundle, shell_config)
+                            self.add_to_shell_config("SSL_CERT_FILE", target_bundle, shell_config)
+                            self.add_to_shell_config("CURL_CA_BUNDLE", target_bundle, shell_config)
+                            if target_bundle != requests_ca_bundle:
+                                self.print_info(f"Repointed REQUESTS_CA_BUNDLE to managed bundle: {target_bundle}")
+                            else:
+                                self.print_info(f"Rebuilt CA bundle at: {target_bundle}")
                         return
 
                     # Check if the file contains our certificate using normalized comparison
@@ -1621,15 +1636,42 @@ class FuwarpPython:
                 self.print_info("Configuring Python certificate...")
                 self.print_info(f"REQUESTS_CA_BUNDLE is already set to: {requests_ca_bundle}")
                 self.print_warn(f"REQUESTS_CA_BUNDLE points to a non-existent file: {requests_ca_bundle}")
+
+                # Treat missing bundle as broken config: create a managed bundle and repoint.
+                requests_bundle_real = os.path.realpath(os.path.expanduser(requests_ca_bundle))
+                target_bundle = python_bundle
+                if requests_bundle_real.startswith(managed_python_dir + os.sep):
+                    target_bundle = requests_ca_bundle
+
+                if not self.is_install_mode():
+                    self.print_action(f"Would create Python CA bundle at {target_bundle}")
+                    self.print_action(f"Would repoint REQUESTS_CA_BUNDLE to {target_bundle}")
+                else:
+                    os.makedirs(os.path.dirname(target_bundle), exist_ok=True)
+                    self.create_bundle_with_system_certs(target_bundle)
+                    self.safe_append_certificate(CERT_PATH, target_bundle)
+                    self.add_to_shell_config("REQUESTS_CA_BUNDLE", target_bundle, shell_config)
+                    self.add_to_shell_config("SSL_CERT_FILE", target_bundle, shell_config)
+                    self.add_to_shell_config("CURL_CA_BUNDLE", target_bundle, shell_config)
+                    self.print_info(f"Repointed REQUESTS_CA_BUNDLE to managed bundle: {target_bundle}")
+                return
         else:
             needs_setup = True
             self.print_info("Configuring Python certificate...")
+
+            # If the default managed bundle is unwritable (e.g. created by sudo),
+            # fall back to a user-writable path under ~/.cloudflare-warp/python/.
+            if os.path.exists(python_bundle) and not self.is_writable(python_bundle):
+                self.print_error(f"Cannot write to {python_bundle} (permission denied)")
+                python_bundle = self.suggest_user_path(python_bundle, "python")
+                self.print_warn(f"Suggesting alternative path: {python_bundle}")
             
             if not self.is_install_mode():
                 self.print_action(f"Would create Python CA bundle at {python_bundle}")
                 self.print_action("Would copy system certificates and append Cloudflare certificate")
             else:
                 self.print_info(f"Creating Python CA bundle at {python_bundle}")
+                os.makedirs(os.path.dirname(python_bundle), exist_ok=True)
                 if not self.create_bundle_with_system_certs(python_bundle):
                     self.print_warn("Could not find system CA bundle, creating new bundle")
                 self.safe_append_certificate(CERT_PATH, python_bundle)
