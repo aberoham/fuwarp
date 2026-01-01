@@ -145,6 +145,185 @@ class TestToolSetup(FuwarpTestCase):
             assert any(call('python3') in mocks['which'].call_args_list for call in [call])
 
 
+class TestJavaMultiInstallation(FuwarpTestCase):
+    """Tests for multi-Java installation detection and configuration."""
+
+    def test_find_all_java_homes_macos_multiple_installations(self):
+        """Test finding multiple Java installations on macOS."""
+        java_home_output = """Matching Java Virtual Machines (3):
+    21.0.1 (arm64) "Eclipse Temurin" - "OpenJDK 21.0.1" /Library/Java/JavaVirtualMachines/temurin-21.jdk/Contents/Home
+    17.0.9 (arm64) "Eclipse Temurin" - "OpenJDK 17.0.9" /Library/Java/JavaVirtualMachines/temurin-17.jdk/Contents/Home
+    11.0.21 (arm64) "Eclipse Temurin" - "OpenJDK 11.0.21" /Users/user/Library/Java/JavaVirtualMachines/temurin-11.jdk/Contents/Home
+
+/Library/Java/JavaVirtualMachines/temurin-21.jdk/Contents/Home"""
+
+        with patch('platform.system', return_value='Darwin'), \
+             patch('os.path.exists') as mock_exists, \
+             patch('os.path.isdir', return_value=True), \
+             patch('os.listdir', return_value=[]), \
+             patch('subprocess.run') as mock_run:
+
+            # Mock /usr/libexec/java_home exists
+            def exists_side_effect(path):
+                if path == '/usr/libexec/java_home':
+                    return True
+                # Mock cacerts files exist for all Java homes
+                if 'lib/security/cacerts' in path:
+                    return True
+                return False
+
+            mock_exists.side_effect = exists_side_effect
+
+            # Mock java_home -V output
+            mock_result = MagicMock()
+            mock_result.stdout = java_home_output
+            mock_run.return_value = mock_result
+
+            instance = fuwarp.FuwarpPython(mode='status')
+            java_homes = instance.find_all_java_homes()
+
+            assert len(java_homes) == 3
+            assert '/Library/Java/JavaVirtualMachines/temurin-21.jdk/Contents/Home' in java_homes
+            assert '/Library/Java/JavaVirtualMachines/temurin-17.jdk/Contents/Home' in java_homes
+            assert '/Users/user/Library/Java/JavaVirtualMachines/temurin-11.jdk/Contents/Home' in java_homes
+
+    def test_find_all_java_homes_macos_directory_scan(self):
+        """Test finding Java installations via directory scan on macOS."""
+        with patch('platform.system', return_value='Darwin'), \
+             patch('os.path.exists', return_value=True), \
+             patch('os.path.isdir', return_value=True), \
+             patch('os.listdir') as mock_listdir, \
+             patch('subprocess.run') as mock_run:
+
+            # Mock java_home -V returns empty
+            mock_result = MagicMock()
+            mock_result.stdout = ""
+            mock_run.return_value = mock_result
+
+            # Mock directory listings
+            def listdir_side_effect(path):
+                if 'JavaVirtualMachines' in path:
+                    return ['temurin-21.jdk', 'temurin-17.jdk', 'not-a-jdk']
+                return []
+
+            mock_listdir.side_effect = listdir_side_effect
+
+            instance = fuwarp.FuwarpPython(mode='status')
+            java_homes = instance.find_all_java_homes()
+
+            # Should find the .jdk directories
+            assert any('temurin-21' in home for home in java_homes)
+            assert any('temurin-17' in home for home in java_homes)
+
+    def test_find_all_java_homes_linux_update_alternatives(self):
+        """Test finding Java installations via update-alternatives on Linux."""
+        alternatives_output = """/usr/lib/jvm/java-21-openjdk-amd64/bin/java
+/usr/lib/jvm/java-17-openjdk-amd64/bin/java
+/usr/lib/jvm/java-11-openjdk-amd64/bin/java"""
+
+        with patch('platform.system', return_value='Linux'), \
+             patch('os.path.exists', return_value=True), \
+             patch('os.path.isdir', return_value=True), \
+             patch('subprocess.run') as mock_run:
+
+            # Mock update-alternatives output
+            mock_result = MagicMock()
+            mock_result.returncode = 0
+            mock_result.stdout = alternatives_output
+            mock_run.return_value = mock_result
+
+            instance = fuwarp.FuwarpPython(mode='status')
+            java_homes = instance.find_all_java_homes()
+
+            assert len(java_homes) >= 3
+            assert any('java-21-openjdk-amd64' in home for home in java_homes)
+            assert any('java-17-openjdk-amd64' in home for home in java_homes)
+            assert any('java-11-openjdk-amd64' in home for home in java_homes)
+
+    def test_setup_java_cert_multiple_installations(self):
+        """Test setup_java_cert configures all detected installations."""
+        fake_java_homes = [
+            '/Library/Java/JavaVirtualMachines/temurin-21.jdk/Contents/Home',
+            '/Library/Java/JavaVirtualMachines/temurin-17.jdk/Contents/Home'
+        ]
+
+        with patch('platform.system', return_value='Darwin'):
+            instance = fuwarp.FuwarpPython(mode='install')
+
+            with patch.object(instance, 'command_exists', return_value=True), \
+                 patch.object(instance, 'find_all_java_homes', return_value=fake_java_homes), \
+                 patch.object(instance, 'find_java_cacerts', return_value='/fake/cacerts'), \
+                 patch('subprocess.run') as mock_run:
+
+                # Mock keytool checks - all return "not installed"
+                mock_result = MagicMock()
+                mock_result.returncode = 1
+                mock_run.return_value = mock_result
+
+                instance.setup_java_cert()
+
+                # Should have called keytool for each Java installation
+                # Each gets checked (list) then installed (import)
+                assert mock_run.call_count >= len(fake_java_homes) * 2
+
+    def test_check_java_status_multiple_installations(self):
+        """Test check_java_status checks all detected installations."""
+        fake_java_homes = [
+            '/Library/Java/JavaVirtualMachines/temurin-21.jdk/Contents/Home',
+            '/Library/Java/JavaVirtualMachines/temurin-17.jdk/Contents/Home'
+        ]
+
+        with patch('platform.system', return_value='Darwin'):
+            instance = fuwarp.FuwarpPython(mode='status')
+
+            with patch.object(instance, 'command_exists', return_value=True), \
+                 patch.object(instance, 'find_all_java_homes', return_value=fake_java_homes), \
+                 patch.object(instance, 'find_java_cacerts', return_value='/fake/cacerts'), \
+                 patch('subprocess.run') as mock_run:
+
+                # Mock keytool checks - first installed, second missing
+                def run_side_effect(*args, **kwargs):
+                    result = MagicMock()
+                    # Alternate between success (cert exists) and failure (cert missing)
+                    if mock_run.call_count % 2 == 1:
+                        result.returncode = 0
+                    else:
+                        result.returncode = 1
+                    return result
+
+                mock_run.side_effect = run_side_effect
+
+                has_issues = instance.check_java_status('/fake/cert.pem')
+
+                # Should report issues because second installation is missing cert
+                assert has_issues is True
+                # Should have checked both installations
+                assert mock_run.call_count == len(fake_java_homes)
+
+    def test_find_all_java_homes_validates_cacerts(self):
+        """Test that find_all_java_homes only returns paths with valid cacerts."""
+        with patch('platform.system', return_value='Darwin'), \
+             patch('os.path.exists', return_value=False), \
+             patch('os.path.isdir', return_value=True), \
+             patch('subprocess.run') as mock_run:
+
+            # Mock java_home returns empty
+            mock_result = MagicMock()
+            mock_result.stdout = ""
+            mock_run.return_value = mock_result
+
+            instance = fuwarp.FuwarpPython(mode='status')
+
+            # Mock find_java_home to return a path but find_java_cacerts returns empty
+            with patch.object(instance, 'find_java_home', return_value='/fake/java'), \
+                 patch.object(instance, 'find_java_cacerts', return_value=''):
+
+                java_homes = instance.find_all_java_homes()
+
+                # Should return empty because cacerts validation fails
+                assert len(java_homes) == 0
+
+
 class TestCLIAndWorkflow(FuwarpTestCase):
     """Tests for CLI argument parsing and complete workflows."""
     
@@ -437,6 +616,7 @@ class TestStatusFunctionContracts(FuwarpTestCase):
             # Mock all external dependencies so functions hit early returns
             with patch.object(instance, 'command_exists', return_value=False), \
                  patch.object(instance, 'get_jenv_java_homes', return_value=[]), \
+                 patch.object(instance, 'find_all_java_homes', return_value=[]), \
                  patch('os.path.exists', return_value=False):
 
                 result = method(str(cert_file))
@@ -464,6 +644,7 @@ class TestStatusFunctionContracts(FuwarpTestCase):
             # Mock tool as not installed
             with patch.object(instance, 'command_exists', return_value=False), \
                  patch.object(instance, 'get_jenv_java_homes', return_value=[]), \
+                 patch.object(instance, 'find_all_java_homes', return_value=[]), \
                  patch('os.path.exists', return_value=False):
 
                 result = method(str(cert_file))
