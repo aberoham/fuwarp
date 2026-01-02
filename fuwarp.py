@@ -631,6 +631,90 @@ class FuwarpPython:
             cacerts = os.path.join(java_home, 'jre/lib/security/cacerts')
         return cacerts if os.path.exists(cacerts) else ''
 
+    def find_all_java_homes(self):
+        """Find all Java installations on the system.
+
+        Returns:
+            list: List of unique Java home paths with valid cacerts
+        """
+        java_homes = set()
+
+        # Strategy 1: Get current/default Java
+        current_java = self.find_java_home()
+        if current_java:
+            java_homes.add(current_java)
+
+        # Strategy 2: Platform-specific multi-installation detection
+        if platform.system() == 'Darwin':
+            # macOS: Use /usr/libexec/java_home -V to list all installations
+            if os.path.exists('/usr/libexec/java_home'):
+                try:
+                    result = subprocess.run(
+                        ['/usr/libexec/java_home', '-V'],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True
+                    )
+                    for line in result.stdout.splitlines():
+                        if line and '/' in line and '/Contents/Home' in line:
+                            # Extract path from end of line
+                            parts = line.split()
+                            for part in reversed(parts):
+                                if '/Contents/Home' in part:
+                                    java_homes.add(part)
+                                    break
+                except Exception as e:
+                    self.print_debug(f"Error listing Java installations: {e}")
+
+            # Also scan common macOS directories
+            for base_dir in ['/Library/Java/JavaVirtualMachines',
+                           os.path.expanduser('~/Library/Java/JavaVirtualMachines')]:
+                if os.path.isdir(base_dir):
+                    try:
+                        for entry in os.listdir(base_dir):
+                            if entry.endswith('.jdk'):
+                                java_home = os.path.join(base_dir, entry, 'Contents/Home')
+                                if os.path.isdir(java_home):
+                                    java_homes.add(java_home)
+                    except (OSError, PermissionError):
+                        pass
+
+        elif platform.system() == 'Linux':
+            # Linux: Try update-alternatives
+            try:
+                result = subprocess.run(
+                    ['update-alternatives', '--list', 'java'],
+                    capture_output=True,
+                    text=True
+                )
+                if result.returncode == 0:
+                    for line in result.stdout.splitlines():
+                        if line and '/bin/java' in line:
+                            java_home = line.replace('/bin/java', '')
+                            java_homes.add(java_home)
+            except (FileNotFoundError, PermissionError):
+                pass
+            except Exception as e:
+                self.print_debug(f"Error listing Java installations: {e}")
+
+            # Scan common Linux directories
+            if os.path.isdir('/usr/lib/jvm'):
+                try:
+                    for entry in os.listdir('/usr/lib/jvm'):
+                        java_home = os.path.join('/usr/lib/jvm', entry)
+                        if os.path.isdir(java_home):
+                            java_homes.add(java_home)
+                except (OSError, PermissionError):
+                    pass
+
+        # Validate: only keep paths with valid cacerts
+        valid_homes = []
+        for home in java_homes:
+            if self.find_java_cacerts(home):
+                valid_homes.append(home)
+
+        return sorted(valid_homes)
+
     def get_gradle_properties_path(self):
         """Get path to Gradle properties file respecting GRADLE_USER_HOME."""
         gradle_home = os.environ.get('GRADLE_USER_HOME', os.path.expanduser('~/.gradle'))
@@ -2002,48 +2086,61 @@ class FuwarpPython:
             return []
 
     def setup_java_cert(self):
-        """Setup Java certificate."""
+        """Setup Java certificate for all detected installations."""
         if not self.command_exists('java') and not self.command_exists('keytool'):
             return
-        
-        java_home = self.find_java_home()
-        if not java_home:
-            self.print_warn("Could not determine JAVA_HOME")
+
+        # Find all Java installations
+        java_homes = self.find_all_java_homes()
+
+        if not java_homes:
+            self.print_warn("No Java installations found")
             return
 
-        cacerts = self.find_java_cacerts(java_home)
-        if not cacerts:
-            self.print_error("Could not find Java cacerts file")
-            return
-        
-        # Check if certificate already exists
-        try:
-            result = subprocess.run(
-                ['keytool', '-list', '-alias', 'cloudflare-zerotrust', '-cacerts', '-storepass', 'changeit'],
-                capture_output=True
-            )
-            if result.returncode == 0 and 'cloudflare-zerotrust' in result.stdout.decode():
-                # Certificate already exists, nothing to do
-                return
-        except Exception:
-            pass
-        
-        self.print_info("Configuring Java certificate...")
-        self.print_info(f"Adding certificate to Java keystore: {cacerts}")
-        
-        if not self.is_install_mode():
-            self.print_action(f"Would import certificate to Java keystore: {cacerts}")
-            self.print_action(f"Would run: keytool -import -trustcacerts -alias cloudflare-zerotrust -file {CERT_PATH} -cacerts -storepass changeit -noprompt")
-        else:
-            result = subprocess.run(
-                ['keytool', '-import', '-trustcacerts', '-alias', 'cloudflare-zerotrust', 
-                 '-file', CERT_PATH, '-cacerts', '-storepass', 'changeit', '-noprompt'],
-                capture_output=True
-            )
-            if result.returncode == 0:
-                self.print_info("Certificate added to Java keystore successfully")
+        # Show count if multiple installations found
+        if len(java_homes) > 1:
+            self.print_info(f"Found {len(java_homes)} Java installation(s)")
+
+        # Process each Java installation
+        for java_home in java_homes:
+            # Extract version name for display
+            if 'Contents/Home' in java_home:
+                version_name = os.path.basename(os.path.dirname(os.path.dirname(java_home))).replace('.jdk', '')
             else:
-                self.print_warn("Failed to add certificate to Java keystore (may require sudo)")
+                version_name = os.path.basename(java_home)
+
+            cacerts = self.find_java_cacerts(java_home)
+            if not cacerts:
+                self.print_warn(f"  ✗ {version_name}: Could not find cacerts file")
+                continue
+
+            # Check if certificate already exists
+            try:
+                result = subprocess.run(
+                    ['keytool', '-list', '-alias', 'cloudflare-zerotrust',
+                     '-keystore', cacerts, '-storepass', 'changeit'],
+                    capture_output=True
+                )
+                if result.returncode == 0 and 'cloudflare-zerotrust' in result.stdout.decode():
+                    self.print_info(f"  ✓ {version_name}: Certificate already installed")
+                    continue
+            except Exception:
+                pass
+
+            self.print_info(f"  Configuring {version_name}...")
+
+            if not self.is_install_mode():
+                self.print_action(f"    Would import certificate to: {cacerts}")
+            else:
+                result = subprocess.run(
+                    ['keytool', '-import', '-trustcacerts', '-alias', 'cloudflare-zerotrust',
+                     '-file', CERT_PATH, '-keystore', cacerts, '-storepass', 'changeit', '-noprompt'],
+                    capture_output=True
+                )
+                if result.returncode == 0:
+                    self.print_info(f"    ✓ {version_name}: Certificate added successfully")
+                else:
+                    self.print_warn(f"    ✗ {version_name}: Failed to add certificate (may require sudo)")
 
     def setup_jenv_cert(self):
         """Setup Java certificates for all jenv-managed Java installations."""
@@ -2995,28 +3092,54 @@ https.get('{test_url}', {{headers: {{'User-Agent': 'Mozilla/5.0'}}}}, (res) => {
         return has_issues
 
     def check_java_status(self, temp_warp_cert):
-        """Check Java configuration status."""
+        """Check Java configuration status for all installations."""
         has_issues = False
-        if self.command_exists('java') or self.command_exists('keytool'):
-            if self.command_exists('keytool'):
-                try:
-                    result = subprocess.run(
-                        ['keytool', '-list', '-alias', 'cloudflare-zerotrust', '-cacerts', '-storepass', 'changeit'],
-                        capture_output=True
-                    )
-                    if result.returncode == 0 and 'cloudflare-zerotrust' in result.stdout.decode():
-                        self.print_info("  ✓ Java keystore contains Cloudflare certificate")
-                    else:
-                        self.print_warn("  ✗ Java keystore missing Cloudflare certificate")
-                        has_issues = True
-                except Exception:
-                    self.print_warn("  ✗ Failed to check Java keystore")
-                    has_issues = True
-            else:
-                self.print_warn("  ✗ keytool not found")
-                has_issues = True
-        else:
+
+        if not self.command_exists('java') and not self.command_exists('keytool'):
             self.print_info("  - Java not installed (would configure if present)")
+            return has_issues
+
+        # Find all Java installations
+        java_homes = self.find_all_java_homes()
+
+        if not java_homes:
+            self.print_warn("  ✗ No Java installations found")
+            return True
+
+        # Show count if multiple installations
+        if len(java_homes) > 1:
+            self.print_info(f"  Checking {len(java_homes)} Java installation(s):")
+
+        # Check each installation
+        for java_home in java_homes:
+            # Extract version name for display
+            if 'Contents/Home' in java_home:
+                version_name = os.path.basename(os.path.dirname(os.path.dirname(java_home))).replace('.jdk', '')
+            else:
+                version_name = os.path.basename(java_home)
+
+            cacerts = self.find_java_cacerts(java_home)
+            if not cacerts:
+                self.print_warn(f"  ✗ {version_name}: cacerts file not found")
+                has_issues = True
+                continue
+
+            # Check if cert exists in keystore
+            try:
+                result = subprocess.run(
+                    ['keytool', '-list', '-alias', 'cloudflare-zerotrust',
+                     '-keystore', cacerts, '-storepass', 'changeit'],
+                    capture_output=True
+                )
+                if result.returncode == 0:
+                    self.print_info(f"  ✓ {version_name}: Certificate installed")
+                else:
+                    self.print_warn(f"  ✗ {version_name}: Certificate missing")
+                    has_issues = True
+            except Exception:
+                self.print_warn(f"  ✗ {version_name}: Could not check certificate status")
+                has_issues = True
+
         return has_issues
 
     def check_jenv_status(self, temp_warp_cert):
